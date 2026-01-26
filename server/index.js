@@ -62,8 +62,28 @@ app.post('/api/todos/:id/done', (req, res) => {
       }
     }
 
+    // Remember focus slot before removing
+    const sourceFocusSlot = task.focus_slot
+
     // Remove from original list
     data.lists[foundList] = data.lists[foundList].filter(t => t.id !== id)
+
+    // If task was in a focus slot, create empty placeholder
+    if (sourceFocusSlot && foundList === 'now') {
+      data.lists.now.push({
+        id: null,
+        text: '',
+        priority: 2,
+        context: '',
+        status: 'pending',
+        created: null,
+        started: null,
+        completed: null,
+        parent_id: null,
+        focus_slot: sourceFocusSlot,
+        is_empty_slot: true
+      })
+    }
 
     // Update task and add to done list
     task.status = 'done'
@@ -146,9 +166,21 @@ app.post('/api/todos/:id/move', (req, res) => {
       delete task.focus_slot
       delete task.is_empty_slot
       if (!data.lists.today) data.lists.today = []
-      data.lists.today.push(task)
+
+      // If insertBefore is specified, insert at that position among siblings
+      if (insertBefore !== undefined && insertBefore !== null) {
+        const insertIndex = data.lists.today.findIndex(t => t.id === insertBefore)
+        if (insertIndex !== -1) {
+          data.lists.today.splice(insertIndex, 0, task)
+        } else {
+          data.lists.today.push(task)
+        }
+      } else {
+        data.lists.today.push(task)
+      }
+
       writeFileSync(TODOS_PATH, JSON.stringify(data, null, 2))
-      return res.json({ success: true, task, from: sourceList, to: 'today', asSubtaskOf })
+      return res.json({ success: true, task, from: sourceList, to: 'today', asSubtaskOf, insertBefore })
     }
 
     // Case 2: Replacing a focus slot (move existing + subtasks back to today)
@@ -195,10 +227,16 @@ app.post('/api/todos/:id/move', (req, res) => {
       )
       if (categoryParent) {
         task.parent_id = categoryParent.id
+        delete task.stored_category // Clear stored category when we have a parent
+      } else {
+        // No matching parent found - store category directly on task
+        task.stored_category = category
+        delete task.parent_id
       }
     } else if (targetList === 'monitoring') {
       // Monitoring is a flat list, clear parent_id
       delete task.parent_id
+      delete task.stored_category
     }
 
     if (!data.lists[targetList]) data.lists[targetList] = []

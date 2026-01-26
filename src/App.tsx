@@ -1,4 +1,5 @@
-import { useEffect, useState, useCallback, DragEvent, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
+import type { DragEvent } from 'react'
 
 interface Todo {
   id: number | null
@@ -11,6 +12,7 @@ interface Todo {
   childCount?: number
   focus_slot?: string
   is_empty_slot?: boolean
+  stored_category?: string
 }
 
 interface TodoData {
@@ -68,10 +70,11 @@ function sortByStatus<T extends { status: string }>(tasks: T[]): T[] {
   })
 }
 
-// Helper to filter by category
+// Helper to filter by category (checks both derived category from parent and stored_category)
 function filterByCategory(tasks: (Todo & { category?: string })[], category: string) {
   return sortByStatus(tasks.filter(t =>
-    t.category?.toLowerCase().includes(category.toLowerCase())
+    t.category?.toLowerCase().includes(category.toLowerCase()) ||
+    t.stored_category?.toLowerCase().includes(category.toLowerCase())
   ))
 }
 
@@ -81,6 +84,7 @@ function App() {
   const [draggedTask, setDraggedTask] = useState<Todo | null>(null)
   const [editingTaskId, setEditingTaskId] = useState<number | null>(null)
   const [expandedTasks, setExpandedTasks] = useState<Set<number>>(new Set())
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set(['tomorrow', 'backlog', 'done']))
 
   const fetchData = useCallback(() => {
     fetch('/api/todos')
@@ -167,6 +171,15 @@ function App() {
     })
   }, [])
 
+  // Promote/demote handlers - move between today/tomorrow/backlog preserving category
+  const promoteTask = useCallback(async (id: number, toList: string, category?: string) => {
+    await moveTask(id, toList, { category })
+  }, [moveTask])
+
+  const demoteTask = useCallback(async (id: number, toList: string, category?: string) => {
+    await moveTask(id, toList, { category })
+  }, [moveTask])
+
   const handleDragStart = (e: DragEvent, task: Todo) => {
     setDraggedTask(task)
     e.dataTransfer.effectAllowed = 'move'
@@ -183,11 +196,13 @@ function App() {
   const now = data.lists.now || []
   const today = data.lists.today || []
   const tomorrow = data.lists.tomorrow || []
+  const backlog = data.lists.backlog || []
   const monitoring = data.lists.monitoring || []
   const doneList = data.lists.done || []
 
   const todayTasks = processList(today)
   const tomorrowTasks = processList(tomorrow)
+  const backlogTasks = processList(backlog)
   const monitoringTasks = sortByStatus(monitoring)
 
   const todayLongRunning = filterByCategory(todayTasks, 'long-running')
@@ -197,9 +212,14 @@ function App() {
   const tomorrowSync = filterByCategory(tomorrowTasks, 'sync')
   const tomorrowMonitoring = filterByCategory(tomorrowTasks, 'monitoring')
 
+  const backlogLongRunning = filterByCategory(backlogTasks, 'long-running')
+  const backlogSync = filterByCategory(backlogTasks, 'sync')
+  const backlogMonitoring = filterByCategory(backlogTasks, 'monitoring')
+
   const allDone = doneList
   const todayActiveCount = todayTasks.length + monitoringTasks.length
   const tomorrowActiveCount = tomorrowTasks.length
+  const backlogActiveCount = backlogTasks.length
 
   return (
     <div className="min-h-screen bg-white p-10">
@@ -240,7 +260,7 @@ function App() {
               accent={accent}
               idx={idx}
               onDone={markDone}
-              onDropAsSubtask={(id) => moveTask(id, 'today', { asSubtaskOf: task.id! })}
+              onDropAsSubtask={(id, insertBeforeId) => moveTask(id, 'today', { asSubtaskOf: task.id!, insertBefore: insertBeforeId })}
               onDropReplace={(id) => moveTask(id, 'now', { focusSlot: task.focus_slot, replaceFocus: true })}
               onAddSubtask={(text) => addTask(text, 'today', 1, task.id!)}
               onUpdateTask={updateTask}
@@ -261,38 +281,91 @@ function App() {
         <span className="text-[#9b9a97] font-normal ml-1">({todayActiveCount})</span>
       </h2>
       <div className="flex gap-4 overflow-x-auto pb-4 mb-8">
-        <Column title="Long-running" count={todayLongRunning.length} color="#6b21a8" tasks={todayLongRunning} rawList={today} onDone={markDone} targetList="today" category="long-running" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
-        <Column title="Sync" count={todaySync.length} color="#c2410c" tasks={todaySync} rawList={today} onDone={markDone} targetList="today" category="sync" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
-        <Column title="Monitoring" count={monitoringTasks.length} color="#529cca" tasks={monitoringTasks} onDone={markDone} targetList="monitoring" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
+        <Column title="Long-running" count={todayLongRunning.length} color="#6b21a8" tasks={todayLongRunning} rawList={today} onDone={markDone} targetList="today" category="long-running" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDemote={(id) => demoteTask(id, 'tomorrow', 'long-running')} />
+        <Column title="Sync" count={todaySync.length} color="#c2410c" tasks={todaySync} rawList={today} onDone={markDone} targetList="today" category="sync" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDemote={(id) => demoteTask(id, 'tomorrow', 'sync')} />
+        <Column title="Monitoring" count={monitoringTasks.length} color="#529cca" tasks={monitoringTasks} onDone={markDone} targetList="monitoring" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDemote={(id) => demoteTask(id, 'tomorrow', 'monitoring')} />
       </div>
 
       {/* Tomorrow Board */}
-      <h2 className="text-xs font-semibold text-[#37352f] uppercase tracking-wide mb-3 flex items-center gap-2">
+      <h2
+        className="text-xs font-semibold text-[#37352f] uppercase tracking-wide mb-3 flex items-center gap-2 select-none hover:text-[#5a5a5a] transition-colors cursor-pointer [&>*]:pointer-events-none"
+        onClick={() => setCollapsedSections(prev => {
+          const next = new Set(prev)
+          if (next.has('tomorrow')) next.delete('tomorrow')
+          else next.add('tomorrow')
+          return next
+        })}
+      >
+        <svg className={`w-3 h-3 transition-transform ${collapsedSections.has('tomorrow') ? '-rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
         <span className="w-2 h-2 rounded-full bg-blue-400"></span>
         Tomorrow
         <span className="text-[#9b9a97] font-normal ml-1">({tomorrowActiveCount})</span>
       </h2>
-      <div className="flex gap-4 overflow-x-auto pb-4 mb-8">
-        <Column title="Long-running" count={tomorrowLongRunning.length} color="#6b21a8" tasks={tomorrowLongRunning} rawList={tomorrow} onDone={markDone} targetList="tomorrow" category="long-running" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
-        <Column title="Sync" count={tomorrowSync.length} color="#c2410c" tasks={tomorrowSync} rawList={tomorrow} onDone={markDone} targetList="tomorrow" category="sync" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
-        <Column title="Monitoring" count={tomorrowMonitoring.length} color="#529cca" tasks={tomorrowMonitoring} rawList={tomorrow} onDone={markDone} targetList="tomorrow" category="monitoring" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
-      </div>
+      {!collapsedSections.has('tomorrow') && (
+        <div className="flex gap-4 overflow-x-auto pb-4 mb-8">
+          <Column title="Long-running" count={tomorrowLongRunning.length} color="#6b21a8" tasks={tomorrowLongRunning} rawList={tomorrow} onDone={markDone} targetList="tomorrow" category="long-running" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onPromote={(id) => promoteTask(id, 'today', 'long-running')} onDemote={(id) => demoteTask(id, 'backlog', 'long-running')} />
+          <Column title="Sync" count={tomorrowSync.length} color="#c2410c" tasks={tomorrowSync} rawList={tomorrow} onDone={markDone} targetList="tomorrow" category="sync" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onPromote={(id) => promoteTask(id, 'today', 'sync')} onDemote={(id) => demoteTask(id, 'backlog', 'sync')} />
+          <Column title="Monitoring" count={tomorrowMonitoring.length} color="#529cca" tasks={tomorrowMonitoring} rawList={tomorrow} onDone={markDone} targetList="tomorrow" category="monitoring" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onPromote={(id) => promoteTask(id, 'monitoring')} onDemote={(id) => demoteTask(id, 'backlog', 'monitoring')} />
+        </div>
+      )}
+      {collapsedSections.has('tomorrow') && <div className="mb-8" />}
+
+      {/* Backlog Board */}
+      <h2
+        className="text-xs font-semibold text-[#37352f] uppercase tracking-wide mb-3 flex items-center gap-2 select-none hover:text-[#5a5a5a] transition-colors cursor-pointer [&>*]:pointer-events-none"
+        onClick={() => setCollapsedSections(prev => {
+          const next = new Set(prev)
+          if (next.has('backlog')) next.delete('backlog')
+          else next.add('backlog')
+          return next
+        })}
+      >
+        <svg className={`w-3 h-3 transition-transform ${collapsedSections.has('backlog') ? '-rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+        <span className="w-2 h-2 rounded-full bg-gray-400"></span>
+        Backlog
+        <span className="text-[#9b9a97] font-normal ml-1">({backlogActiveCount})</span>
+      </h2>
+      {!collapsedSections.has('backlog') && (
+        <div className="flex gap-4 overflow-x-auto pb-4 mb-8">
+          <Column title="Long-running" count={backlogLongRunning.length} color="#6b21a8" tasks={backlogLongRunning} rawList={backlog} onDone={markDone} targetList="backlog" category="long-running" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onPromote={(id) => promoteTask(id, 'tomorrow', 'long-running')} />
+          <Column title="Sync" count={backlogSync.length} color="#c2410c" tasks={backlogSync} rawList={backlog} onDone={markDone} targetList="backlog" category="sync" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onPromote={(id) => promoteTask(id, 'tomorrow', 'sync')} />
+          <Column title="Monitoring" count={backlogMonitoring.length} color="#529cca" tasks={backlogMonitoring} rawList={backlog} onDone={markDone} targetList="backlog" category="monitoring" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onPromote={(id) => promoteTask(id, 'tomorrow', 'monitoring')} />
+        </div>
+      )}
+      {collapsedSections.has('backlog') && <div className="mb-8" />}
 
       {/* Done Section */}
       {allDone.length > 0 && (
         <>
-          <h2 className="text-xs font-semibold text-[#37352f] uppercase tracking-wide mb-3 flex items-center gap-2">
+          <h2
+            className="text-xs font-semibold text-[#37352f] uppercase tracking-wide mb-3 flex items-center gap-2 select-none hover:text-[#5a5a5a] transition-colors cursor-pointer [&>*]:pointer-events-none"
+            onClick={() => setCollapsedSections(prev => {
+              const next = new Set(prev)
+              if (next.has('done')) next.delete('done')
+              else next.add('done')
+              return next
+            })}
+          >
+            <svg className={`w-3 h-3 transition-transform ${collapsedSections.has('done') ? '-rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
             <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
             Done
             <span className="text-[#9b9a97] font-normal ml-1">({allDone.length})</span>
           </h2>
-          <div className="bg-[#f7f6f3] rounded-lg p-3 max-w-[600px] max-h-[400px] overflow-y-auto">
-            <div className="space-y-1">
-              {allDone.map(task => (
-                <DoneItem key={task.id} task={task} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
-              ))}
+          {!collapsedSections.has('done') && (
+            <div className="bg-[#f7f6f3] rounded-lg p-3 max-w-[600px] max-h-[400px] overflow-y-auto">
+              <div className="space-y-1">
+                {allDone.map(task => (
+                  <DoneItem key={task.id} task={task} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
+                ))}
+              </div>
             </div>
-          </div>
+          )}
         </>
       )}
     </div>
@@ -307,7 +380,7 @@ function FocusSlot({ task, isEmpty, subtasks, accent, idx, onDone, onDropAsSubta
   accent: { border: string; bg: string; label: string }
   idx: number
   onDone: (id: number) => void
-  onDropAsSubtask: (id: number) => void
+  onDropAsSubtask: (id: number, insertBeforeId?: number) => void
   onDropReplace: (id: number) => void
   onAddSubtask: (text: string) => void
   onUpdateTask: (id: number, updates: { text?: string }) => void
@@ -353,12 +426,19 @@ function FocusSlot({ task, isEmpty, subtasks, accent, idx, onDone, onDropAsSubta
       setSubtaskDropIndex(null)
     }
   }
-  const handleSubtaskDrop = (e: DragEvent) => {
+  const handleSubtaskDrop = (e: DragEvent, dropIndex?: number) => {
     e.preventDefault()
     e.stopPropagation()
+    const currentDropIndex = dropIndex ?? subtaskDropIndex
     setSubtaskDropIndex(null)
     const id = parseInt(e.dataTransfer.getData('text/plain'))
-    if (id) onDropAsSubtask(id)
+    if (id) {
+      // Determine which subtask to insert before based on drop index
+      const insertBeforeId = currentDropIndex !== null && currentDropIndex < subtasks.length
+        ? subtasks[currentDropIndex]?.id ?? undefined
+        : undefined
+      onDropAsSubtask(id, insertBeforeId)
+    }
   }
 
   const anyDragOver = headerDragOver || subtaskDropIndex !== null
@@ -368,16 +448,19 @@ function FocusSlot({ task, isEmpty, subtasks, accent, idx, onDone, onDropAsSubta
     const isActive = subtaskDropIndex === index && draggedTask
     return (
       <div
-        className={`h-3 relative transition-all ${isActive ? 'h-8' : ''}`}
+        className="h-6 relative -my-2"
         onDragOver={(e) => handleSubtaskDragOver(e, index)}
         onDragEnter={(e) => { e.preventDefault(); setSubtaskDropIndex(index) }}
-        onDrop={handleSubtaskDrop}
+        onDragLeave={(e) => { e.stopPropagation() }}
+        onDrop={(e) => handleSubtaskDrop(e, index)}
       >
-        {isActive && (
-          <div className="absolute inset-x-0 inset-y-0 bg-blue-100 border-2 border-dashed border-blue-400 rounded flex items-center justify-center">
-            <span className="text-xs text-blue-500">Drop here</span>
-          </div>
-        )}
+        <div
+          className={`absolute inset-x-1 top-1/2 -translate-y-1/2 h-8 bg-blue-100 border-2 border-dashed border-blue-400 rounded flex items-center justify-center transition-opacity ${isActive ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+          onDragOver={(e) => handleSubtaskDragOver(e, index)}
+          onDrop={(e) => handleSubtaskDrop(e, index)}
+        >
+          <span className="text-xs text-blue-500">Drop here</span>
+        </div>
       </div>
     )
   }
@@ -388,8 +471,8 @@ function FocusSlot({ task, isEmpty, subtasks, accent, idx, onDone, onDropAsSubta
       style={{
         borderLeftColor: accent.border,
         background: accent.bg,
-        ringColor: accent.border
-      }}
+        '--tw-ring-color': accent.border
+      } as React.CSSProperties}
     >
       {/* Header area - drop here to REPLACE the focus task */}
       <div
@@ -439,7 +522,7 @@ function FocusSlot({ task, isEmpty, subtasks, accent, idx, onDone, onDropAsSubta
               <div
                 className={`text-center py-6 border-2 border-dashed rounded transition-colors ${subtaskDropIndex === 0 ? 'border-blue-400 bg-blue-50' : 'border-gray-200'}`}
                 onDragOver={(e) => handleSubtaskDragOver(e, 0)}
-                onDrop={handleSubtaskDrop}
+                onDrop={(e) => handleSubtaskDrop(e, 0)}
               >
                 <span className="text-xs text-[#9b9a97] italic">Drop subtask here</span>
               </div>
@@ -673,7 +756,7 @@ function SubtaskItem({ task, onDone, onUpdateTask, editingTaskId, setEditingTask
   )
 }
 
-function Column({ title, count, color, tasks, rawList, onDone, targetList, category, onDrop, onAdd, onUpdateTask, editingTaskId, setEditingTaskId, expandedTasks, toggleExpanded, draggedTask, onDragStart, onDragEnd }: {
+function Column({ title, count, color, tasks, rawList, onDone, targetList, category, onDrop, onAdd, onUpdateTask, editingTaskId, setEditingTaskId, expandedTasks, toggleExpanded, draggedTask, onDragStart, onDragEnd, onPromote, onDemote }: {
   title: string
   count: number
   color: string
@@ -692,6 +775,8 @@ function Column({ title, count, color, tasks, rawList, onDone, targetList, categ
   draggedTask: Todo | null
   onDragStart: (e: DragEvent, task: Todo) => void
   onDragEnd: () => void
+  onPromote?: (id: number) => void
+  onDemote?: (id: number) => void
 }) {
   const [dropIndex, setDropIndex] = useState<number | null>(null)
   const [newTaskText, setNewTaskText] = useState('')
@@ -801,6 +886,8 @@ function Column({ title, count, color, tasks, rawList, onDone, targetList, categ
                     onDrop(droppedId, targetList, { asSubtaskOf: task.id })
                   }
                 }}
+                onPromote={onPromote ? () => task.id && onPromote(task.id) : undefined}
+                onDemote={onDemote ? () => task.id && onDemote(task.id) : undefined}
               />
               {/* Expanded subtasks */}
               {isExpanded && (
@@ -878,7 +965,7 @@ function Column({ title, count, color, tasks, rawList, onDone, targetList, categ
   )
 }
 
-function TaskCard({ task, onDone, onUpdateTask, editingTaskId, setEditingTaskId, onDragStart, onDragEnd, hasSubtasks, isExpanded, onToggleExpand, isSubtaskDropTarget, onSubtaskDragOver, onSubtaskDragLeave, onSubtaskDrop }: {
+function TaskCard({ task, onDone, onUpdateTask, editingTaskId, setEditingTaskId, onDragStart, onDragEnd, hasSubtasks, isExpanded, onToggleExpand, isSubtaskDropTarget, onSubtaskDragOver, onSubtaskDragLeave, onSubtaskDrop, onPromote, onDemote }: {
   task: Todo & { category?: string; childCount?: number }
   onDone: (id: number, recursive?: boolean) => void
   onUpdateTask: (id: number, updates: { text?: string }) => void
@@ -893,6 +980,8 @@ function TaskCard({ task, onDone, onUpdateTask, editingTaskId, setEditingTaskId,
   onSubtaskDragOver: () => void
   onSubtaskDragLeave: () => void
   onSubtaskDrop: (droppedId: number) => void
+  onPromote?: (id: number) => void
+  onDemote?: (id: number) => void
 }) {
   const [hover, setHover] = useState(false)
   const [editText, setEditText] = useState(task.text)
@@ -1004,8 +1093,33 @@ function TaskCard({ task, onDone, onUpdateTask, editingTaskId, setEditingTaskId,
           {task.childCount || '+'} sub
         </span>
       )}
-      {/* Checkbox on the right - always visible on hover */}
-      <div className="w-5 h-5 shrink-0 flex items-center justify-center">
+      {/* Action buttons on the right - visible on hover */}
+      <div className="shrink-0 flex items-center gap-1">
+        {/* Promote button (up arrow) */}
+        {hover && task.id && !isEditing && onPromote && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onPromote(task.id!); }}
+            className="w-5 h-5 rounded flex items-center justify-center text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+            title="Move up"
+          >
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+            </svg>
+          </button>
+        )}
+        {/* Demote button (down arrow) */}
+        {hover && task.id && !isEditing && onDemote && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onDemote(task.id!); }}
+            className="w-5 h-5 rounded flex items-center justify-center text-gray-400 hover:text-orange-600 hover:bg-orange-50 transition-colors"
+            title="Move down"
+          >
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+        )}
+        {/* Checkbox */}
         {hover && task.id && !isEditing ? (
           <button
             onClick={(e) => { e.stopPropagation(); onDone(task.id!, hasSubtasks); }}
