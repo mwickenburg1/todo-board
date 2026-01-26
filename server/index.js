@@ -18,10 +18,11 @@ app.get('/api/todos', (req, res) => {
   }
 })
 
-// Mark a task as done - moves it to done list
+// Mark a task as done - moves it to done list (optionally recursive)
 app.post('/api/todos/:id/done', (req, res) => {
   try {
     const id = parseInt(req.params.id)
+    const { recursive } = req.body || {}
     const data = JSON.parse(readFileSync(TODOS_PATH, 'utf-8'))
 
     // Find the task in any list
@@ -41,23 +42,47 @@ app.post('/api/todos/:id/done', (req, res) => {
       return res.status(404).json({ error: 'Task not found' })
     }
 
+    const now = new Date().toISOString()
+    const completedTasks = []
+
+    // If recursive, also mark all children as done
+    if (recursive) {
+      // Find all children in all lists
+      for (const [listName, tasks] of Object.entries(data.lists)) {
+        if (!tasks || listName === 'done') continue
+        const children = tasks.filter(t => t.parent_id === id)
+        for (const child of children) {
+          child.status = 'done'
+          child.completed = now
+          child.from_list = listName
+          completedTasks.push({ ...child })
+        }
+        // Remove children from their list
+        data.lists[listName] = tasks.filter(t => t.parent_id !== id)
+      }
+    }
+
     // Remove from original list
     data.lists[foundList] = data.lists[foundList].filter(t => t.id !== id)
 
     // Update task and add to done list
     task.status = 'done'
-    task.completed = new Date().toISOString()
+    task.completed = now
     task.from_list = foundList
 
     if (!data.lists.done) data.lists.done = []
+
+    // Add children first, then parent
+    data.lists.done.push(...completedTasks)
     data.lists.done.push(task)
 
     // Add to completion log
     if (!data.completed_log) data.completed_log = []
+    data.completed_log.push(...completedTasks)
     data.completed_log.push(task)
 
     writeFileSync(TODOS_PATH, JSON.stringify(data, null, 2))
-    res.json({ success: true, task })
+    res.json({ success: true, task, childrenCompleted: completedTasks.length })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

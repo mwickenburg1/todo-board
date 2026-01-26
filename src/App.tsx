@@ -95,9 +95,13 @@ function App() {
     return () => clearInterval(interval)
   }, [fetchData])
 
-  const markDone = useCallback(async (id: number) => {
+  const markDone = useCallback(async (id: number, recursive: boolean = false) => {
     try {
-      const res = await fetch(`/api/todos/${id}/done`, { method: 'POST' })
+      const res = await fetch(`/api/todos/${id}/done`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recursive })
+      })
       if (res.ok) {
         fetchData()
       }
@@ -469,7 +473,7 @@ function FocusSlot({ task, isEmpty, subtasks, accent, idx, onDone, onDropAsSubta
 // Focus task item with hover checkbox, drag handle, and inline editing
 function FocusTaskItem({ task, onDone, onUpdateTask, editingTaskId, setEditingTaskId, onDragStart, onDragEnd }: {
   task: Todo
-  onDone: (id: number) => void
+  onDone: (id: number, recursive?: boolean) => void
   onUpdateTask: (id: number, updates: { text?: string }) => void
   editingTaskId: number | null
   setEditingTaskId: (id: number | null) => void
@@ -527,16 +531,6 @@ function FocusTaskItem({ task, onDone, onUpdateTask, editingTaskId, setEditingTa
       >
         <DragHandle />
       </div>
-      {/* Checkbox on hover */}
-      <div className="w-6 h-6 shrink-0 flex items-center justify-center">
-        {hover && task.id && !isEditing ? (
-          <button
-            onClick={() => onDone(task.id!)}
-            className="w-6 h-6 rounded border-2 border-emerald-500 hover:bg-emerald-500 transition-colors"
-            title="Mark as done"
-          />
-        ) : null}
-      </div>
       {/* Text - clickable to edit */}
       {isEditing ? (
         <input
@@ -550,12 +544,22 @@ function FocusTaskItem({ task, onDone, onUpdateTask, editingTaskId, setEditingTa
         />
       ) : (
         <span
-          className="cursor-text hover:bg-black/5 rounded px-1 -mx-1"
+          className="cursor-text hover:bg-black/5 rounded px-1 -mx-1 flex-1"
           onClick={handleStartEdit}
         >
           #{task.id} {task.text}
         </span>
       )}
+      {/* Checkbox on the right */}
+      <div className="w-6 h-6 shrink-0 flex items-center justify-center">
+        {hover && task.id && !isEditing ? (
+          <button
+            onClick={() => onDone(task.id!, true)}
+            className="w-6 h-6 rounded border-2 border-emerald-500 hover:bg-emerald-500 transition-colors"
+            title="Mark as done (with subtasks)"
+          />
+        ) : null}
+      </div>
     </div>
   )
 }
@@ -563,7 +567,7 @@ function FocusTaskItem({ task, onDone, onUpdateTask, editingTaskId, setEditingTa
 // Subtask item with hover checkbox, drag handle, and inline editing
 function SubtaskItem({ task, onDone, onUpdateTask, editingTaskId, setEditingTaskId, onDragStart, onDragEnd }: {
   task: Todo
-  onDone: (id: number) => void
+  onDone: (id: number, recursive?: boolean) => void
   onUpdateTask: (id: number, updates: { text?: string }) => void
   editingTaskId: number | null
   setEditingTaskId: (id: number | null) => void
@@ -624,22 +628,12 @@ function SubtaskItem({ task, onDone, onUpdateTask, editingTaskId, setEditingTask
       >
         <DragHandle className="w-3 h-3" />
       </div>
-      {/* Checkbox */}
-      <div className="w-5 h-5 shrink-0 flex items-center justify-center">
-        {hover && task.id && !isEditing ? (
-          <button
-            onClick={() => onDone(task.id!)}
-            className="w-5 h-5 rounded border-2 border-emerald-500 hover:bg-emerald-500 transition-colors"
-            title="Mark as done"
-          />
-        ) : (
-          <span className={`w-5 h-5 rounded-full ${
-            task.status === 'in_progress'
-              ? 'bg-amber-400 ring-4 ring-amber-400/20'
-              : 'bg-gray-300'
-          }`}></span>
-        )}
-      </div>
+      {/* Status indicator */}
+      <span className={`w-3 h-3 rounded-full shrink-0 ${
+        task.status === 'in_progress'
+          ? 'bg-amber-400 ring-2 ring-amber-400/20'
+          : 'bg-gray-300'
+      }`}></span>
       {/* Text - clickable to edit */}
       <div className="flex-1 min-w-0">
         {isEditing ? (
@@ -664,6 +658,16 @@ function SubtaskItem({ task, onDone, onUpdateTask, editingTaskId, setEditingTask
             {task.text}
           </span>
         )}
+      </div>
+      {/* Checkbox on the right */}
+      <div className="w-5 h-5 shrink-0 flex items-center justify-center">
+        {hover && task.id && !isEditing ? (
+          <button
+            onClick={() => onDone(task.id!)}
+            className="w-5 h-5 rounded border-2 border-emerald-500 hover:bg-emerald-500 transition-colors"
+            title="Mark as done"
+          />
+        ) : null}
       </div>
     </div>
   )
@@ -876,7 +880,7 @@ function Column({ title, count, color, tasks, rawList, onDone, targetList, categ
 
 function TaskCard({ task, onDone, onUpdateTask, editingTaskId, setEditingTaskId, onDragStart, onDragEnd, hasSubtasks, isExpanded, onToggleExpand, isSubtaskDropTarget, onSubtaskDragOver, onSubtaskDragLeave, onSubtaskDrop }: {
   task: Todo & { category?: string; childCount?: number }
-  onDone: (id: number) => void
+  onDone: (id: number, recursive?: boolean) => void
   onUpdateTask: (id: number, updates: { text?: string }) => void
   editingTaskId: number | null
   setEditingTaskId: (id: number | null) => void
@@ -961,8 +965,8 @@ function TaskCard({ task, onDone, onUpdateTask, editingTaskId, setEditingTaskId,
       >
         <DragHandle className="w-3 h-3" />
       </div>
-      {/* Expand/collapse button */}
-      {hasSubtasks ? (
+      {/* Expand/collapse button for items with subtasks */}
+      {hasSubtasks && (
         <button
           onClick={(e) => { e.stopPropagation(); onToggleExpand(); }}
           className="w-5 h-5 shrink-0 flex items-center justify-center text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors"
@@ -972,19 +976,9 @@ function TaskCard({ task, onDone, onUpdateTask, editingTaskId, setEditingTaskId,
             <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
           </svg>
         </button>
-      ) : (
-        <div className="w-5 h-5 shrink-0 flex items-center justify-center">
-          {hover && task.id && !isEditing ? (
-            <button
-              onClick={(e) => { e.stopPropagation(); onDone(task.id!); }}
-              className="w-5 h-5 rounded border-2 border-emerald-500 hover:bg-emerald-500 transition-colors"
-              title="Mark as done"
-            />
-          ) : (
-            <span className="text-[9px] text-[#b0b0b0]">#{task.id}</span>
-          )}
-        </div>
       )}
+      {/* Task ID */}
+      <span className="text-[9px] text-[#b0b0b0] shrink-0">#{task.id}</span>
       {isInProgress && <span className="text-[10px] px-1 py-0.5 rounded bg-[#fef3c7] text-[#d97706] shrink-0" title="In Progress">●</span>}
       {/* Text - clickable to edit */}
       {isEditing ? (
@@ -999,17 +993,27 @@ function TaskCard({ task, onDone, onUpdateTask, editingTaskId, setEditingTaskId,
         />
       ) : (
         <span
-          className="text-sm text-[#37352f] truncate cursor-text hover:bg-black/5 rounded px-1 -mx-1"
+          className="text-sm text-[#37352f] truncate cursor-text hover:bg-black/5 rounded px-1 -mx-1 flex-1"
           onClick={handleStartEdit}
         >
           {task.text}
         </span>
       )}
       {hasSubtasks && (
-        <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-600 shrink-0 ml-auto">
+        <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-600 shrink-0">
           {task.childCount || '+'} sub
         </span>
       )}
+      {/* Checkbox on the right - always visible on hover */}
+      <div className="w-5 h-5 shrink-0 flex items-center justify-center">
+        {hover && task.id && !isEditing ? (
+          <button
+            onClick={(e) => { e.stopPropagation(); onDone(task.id!, hasSubtasks); }}
+            className="w-5 h-5 rounded border-2 border-emerald-500 hover:bg-emerald-500 transition-colors"
+            title={hasSubtasks ? "Mark as done (with subtasks)" : "Mark as done"}
+          />
+        ) : null}
+      </div>
     </div>
   )
 }
