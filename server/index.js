@@ -197,6 +197,43 @@ app.post('/api/todos/:id/move', (req, res) => {
   }
 })
 
+// Update a task (text, context, etc.)
+app.patch('/api/todos/:id', (req, res) => {
+  try {
+    const id = parseInt(req.params.id)
+    const { text, context, status } = req.body
+
+    const data = JSON.parse(readFileSync(TODOS_PATH, 'utf-8'))
+
+    // Find the task in any list
+    let foundList = null
+    let task = null
+    for (const [listName, tasks] of Object.entries(data.lists)) {
+      if (!tasks) continue
+      const found = tasks.find(t => t.id === id)
+      if (found) {
+        foundList = listName
+        task = found
+        break
+      }
+    }
+
+    if (!task) {
+      return res.status(404).json({ error: 'Task not found' })
+    }
+
+    // Update fields if provided
+    if (text !== undefined) task.text = text
+    if (context !== undefined) task.context = context
+    if (status !== undefined) task.status = status
+
+    writeFileSync(TODOS_PATH, JSON.stringify(data, null, 2))
+    res.json({ success: true, task })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // Add a new task
 app.post('/api/todos', (req, res) => {
   try {

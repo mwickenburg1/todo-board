@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, DragEvent } from 'react'
+import { useEffect, useState, useCallback, DragEvent, useRef } from 'react'
 
 interface Todo {
   id: number | null
@@ -22,6 +22,20 @@ interface TodoData {
     monitoring?: Todo[]
     [key: string]: Todo[] | undefined
   }
+}
+
+// Drag handle icon component
+function DragHandle({ className = '' }: { className?: string }) {
+  return (
+    <svg className={`w-4 h-4 text-gray-400 ${className}`} viewBox="0 0 24 24" fill="currentColor">
+      <circle cx="9" cy="6" r="1.5" />
+      <circle cx="15" cy="6" r="1.5" />
+      <circle cx="9" cy="12" r="1.5" />
+      <circle cx="15" cy="12" r="1.5" />
+      <circle cx="9" cy="18" r="1.5" />
+      <circle cx="15" cy="18" r="1.5" />
+    </svg>
+  )
 }
 
 // Helper to process a list into categorized tasks
@@ -65,6 +79,8 @@ function App() {
   const [data, setData] = useState<TodoData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [draggedTask, setDraggedTask] = useState<Todo | null>(null)
+  const [editingTaskId, setEditingTaskId] = useState<number | null>(null)
+  const [expandedTasks, setExpandedTasks] = useState<Set<number>>(new Set())
 
   const fetchData = useCallback(() => {
     fetch('/api/todos')
@@ -119,6 +135,33 @@ function App() {
       console.error('Failed to add task:', err)
     }
   }, [fetchData])
+
+  const updateTask = useCallback(async (id: number, updates: { text?: string; context?: string; status?: string }) => {
+    try {
+      const res = await fetch(`/api/todos/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      })
+      if (res.ok) {
+        fetchData()
+      }
+    } catch (err) {
+      console.error('Failed to update task:', err)
+    }
+  }, [fetchData])
+
+  const toggleExpanded = useCallback((taskId: number) => {
+    setExpandedTasks(prev => {
+      const next = new Set(prev)
+      if (next.has(taskId)) {
+        next.delete(taskId)
+      } else {
+        next.add(taskId)
+      }
+      return next
+    })
+  }, [])
 
   const handleDragStart = (e: DragEvent, task: Todo) => {
     setDraggedTask(task)
@@ -196,6 +239,9 @@ function App() {
               onDropAsSubtask={(id) => moveTask(id, 'today', { asSubtaskOf: task.id! })}
               onDropReplace={(id) => moveTask(id, 'now', { focusSlot: task.focus_slot, replaceFocus: true })}
               onAddSubtask={(text) => addTask(text, 'today', 1, task.id!)}
+              onUpdateTask={updateTask}
+              editingTaskId={editingTaskId}
+              setEditingTaskId={setEditingTaskId}
               draggedTask={draggedTask}
               onDragStart={handleDragStart}
               onDragEnd={handleDragEnd}
@@ -211,9 +257,9 @@ function App() {
         <span className="text-[#9b9a97] font-normal ml-1">({todayActiveCount})</span>
       </h2>
       <div className="flex gap-4 overflow-x-auto pb-4 mb-8">
-        <Column title="Long-running" count={todayLongRunning.length} color="#6b21a8" tasks={todayLongRunning} rawList={today} onDone={markDone} targetList="today" category="long-running" onDrop={moveTask} onAdd={addTask} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
-        <Column title="Sync" count={todaySync.length} color="#c2410c" tasks={todaySync} rawList={today} onDone={markDone} targetList="today" category="sync" onDrop={moveTask} onAdd={addTask} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
-        <Column title="Monitoring" count={monitoringTasks.length} color="#529cca" tasks={monitoringTasks} onDone={markDone} targetList="monitoring" onDrop={moveTask} onAdd={addTask} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
+        <Column title="Long-running" count={todayLongRunning.length} color="#6b21a8" tasks={todayLongRunning} rawList={today} onDone={markDone} targetList="today" category="long-running" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
+        <Column title="Sync" count={todaySync.length} color="#c2410c" tasks={todaySync} rawList={today} onDone={markDone} targetList="today" category="sync" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
+        <Column title="Monitoring" count={monitoringTasks.length} color="#529cca" tasks={monitoringTasks} onDone={markDone} targetList="monitoring" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
       </div>
 
       {/* Tomorrow Board */}
@@ -223,9 +269,9 @@ function App() {
         <span className="text-[#9b9a97] font-normal ml-1">({tomorrowActiveCount})</span>
       </h2>
       <div className="flex gap-4 overflow-x-auto pb-4 mb-8">
-        <Column title="Long-running" count={tomorrowLongRunning.length} color="#6b21a8" tasks={tomorrowLongRunning} rawList={tomorrow} onDone={markDone} targetList="tomorrow" category="long-running" onDrop={moveTask} onAdd={addTask} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
-        <Column title="Sync" count={tomorrowSync.length} color="#c2410c" tasks={tomorrowSync} rawList={tomorrow} onDone={markDone} targetList="tomorrow" category="sync" onDrop={moveTask} onAdd={addTask} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
-        <Column title="Monitoring" count={tomorrowMonitoring.length} color="#529cca" tasks={tomorrowMonitoring} rawList={tomorrow} onDone={markDone} targetList="tomorrow" category="monitoring" onDrop={moveTask} onAdd={addTask} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
+        <Column title="Long-running" count={tomorrowLongRunning.length} color="#6b21a8" tasks={tomorrowLongRunning} rawList={tomorrow} onDone={markDone} targetList="tomorrow" category="long-running" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
+        <Column title="Sync" count={tomorrowSync.length} color="#c2410c" tasks={tomorrowSync} rawList={tomorrow} onDone={markDone} targetList="tomorrow" category="sync" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
+        <Column title="Monitoring" count={tomorrowMonitoring.length} color="#529cca" tasks={tomorrowMonitoring} rawList={tomorrow} onDone={markDone} targetList="tomorrow" category="monitoring" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
       </div>
 
       {/* Done Section */}
@@ -250,7 +296,7 @@ function App() {
 }
 
 // Focus slot component with separate drop zones for header (replace) and subtask area (add subtask)
-function FocusSlot({ task, isEmpty, subtasks, accent, idx, onDone, onDropAsSubtask, onDropReplace, onAddSubtask, draggedTask, onDragStart, onDragEnd }: {
+function FocusSlot({ task, isEmpty, subtasks, accent, idx, onDone, onDropAsSubtask, onDropReplace, onAddSubtask, onUpdateTask, editingTaskId, setEditingTaskId, draggedTask, onDragStart, onDragEnd }: {
   task: Todo
   isEmpty: boolean
   subtasks: Todo[]
@@ -260,6 +306,9 @@ function FocusSlot({ task, isEmpty, subtasks, accent, idx, onDone, onDropAsSubta
   onDropAsSubtask: (id: number) => void
   onDropReplace: (id: number) => void
   onAddSubtask: (text: string) => void
+  onUpdateTask: (id: number, updates: { text?: string }) => void
+  editingTaskId: number | null
+  setEditingTaskId: (id: number | null) => void
   draggedTask: Todo | null
   onDragStart: (e: DragEvent, task: Todo) => void
   onDragEnd: () => void
@@ -354,7 +403,7 @@ function FocusSlot({ task, isEmpty, subtasks, accent, idx, onDone, onDropAsSubta
           </div>
         ) : (
           <>
-            <FocusTaskItem task={task} onDone={onDone} onDragStart={onDragStart} onDragEnd={onDragEnd} />
+            <FocusTaskItem task={task} onDone={onDone} onUpdateTask={onUpdateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} onDragStart={onDragStart} onDragEnd={onDragEnd} />
             {task.context && (
               <div className="text-xs text-[#6b7280]">{task.context}</div>
             )}
@@ -377,7 +426,7 @@ function FocusSlot({ task, isEmpty, subtasks, accent, idx, onDone, onDropAsSubta
                 <SubtaskDropZone index={0} />
                 {subtasks.map((sub, subIdx) => (
                   <div key={sub.id}>
-                    <SubtaskItem task={sub} onDone={onDone} onDragStart={onDragStart} onDragEnd={onDragEnd} />
+                    <SubtaskItem task={sub} onDone={onDone} onUpdateTask={onUpdateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} onDragStart={onDragStart} onDragEnd={onDragEnd} />
                     <SubtaskDropZone index={subIdx + 1} />
                   </div>
                 ))}
@@ -417,26 +466,70 @@ function FocusSlot({ task, isEmpty, subtasks, accent, idx, onDone, onDropAsSubta
   )
 }
 
-// Focus task item with hover checkbox and drag
-function FocusTaskItem({ task, onDone, onDragStart, onDragEnd }: {
+// Focus task item with hover checkbox, drag handle, and inline editing
+function FocusTaskItem({ task, onDone, onUpdateTask, editingTaskId, setEditingTaskId, onDragStart, onDragEnd }: {
   task: Todo
   onDone: (id: number) => void
+  onUpdateTask: (id: number, updates: { text?: string }) => void
+  editingTaskId: number | null
+  setEditingTaskId: (id: number | null) => void
   onDragStart: (e: DragEvent, task: Todo) => void
   onDragEnd: () => void
 }) {
   const [hover, setHover] = useState(false)
+  const [editText, setEditText] = useState(task.text)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const isEditing = editingTaskId === task.id
+
+  const handleStartEdit = () => {
+    if (task.id) {
+      setEditText(task.text)
+      setEditingTaskId(task.id)
+    }
+  }
+
+  const handleSaveEdit = () => {
+    if (task.id && editText.trim() && editText !== task.text) {
+      onUpdateTask(task.id, { text: editText.trim() })
+    }
+    setEditingTaskId(null)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleSaveEdit()
+    } else if (e.key === 'Escape') {
+      setEditText(task.text)
+      setEditingTaskId(null)
+    }
+  }
+
+  // Focus input when editing starts
+  useEffect(() => {
+    if (isEditing && inputRef.current) {
+      inputRef.current.focus()
+      inputRef.current.select()
+    }
+  }, [isEditing])
 
   return (
     <div
-      className="text-lg font-bold mb-1 text-[#1a1a1a] flex items-center gap-2 group cursor-grab active:cursor-grabbing min-h-[32px]"
+      className="text-lg font-bold mb-1 text-[#1a1a1a] flex items-center gap-2 group min-h-[32px]"
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      draggable={!!task.id}
-      onDragStart={(e) => task.id && onDragStart(e, task)}
-      onDragEnd={onDragEnd}
     >
+      {/* Drag handle */}
+      <div
+        className="shrink-0 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity"
+        draggable={!!task.id}
+        onDragStart={(e) => task.id && onDragStart(e, task)}
+        onDragEnd={onDragEnd}
+      >
+        <DragHandle />
+      </div>
+      {/* Checkbox on hover */}
       <div className="w-6 h-6 shrink-0 flex items-center justify-center">
-        {hover && task.id ? (
+        {hover && task.id && !isEditing ? (
           <button
             onClick={() => onDone(task.id!)}
             className="w-6 h-6 rounded border-2 border-emerald-500 hover:bg-emerald-500 transition-colors"
@@ -444,35 +537,96 @@ function FocusTaskItem({ task, onDone, onDragStart, onDragEnd }: {
           />
         ) : null}
       </div>
-      <span>#{task.id} {task.text}</span>
+      {/* Text - clickable to edit */}
+      {isEditing ? (
+        <input
+          ref={inputRef}
+          type="text"
+          value={editText}
+          onChange={(e) => setEditText(e.target.value)}
+          onBlur={handleSaveEdit}
+          onKeyDown={handleKeyDown}
+          className="flex-1 text-lg font-bold bg-white border border-blue-400 rounded px-2 py-0.5 focus:outline-none focus:ring-2 focus:ring-blue-400"
+        />
+      ) : (
+        <span
+          className="cursor-text hover:bg-black/5 rounded px-1 -mx-1"
+          onClick={handleStartEdit}
+        >
+          #{task.id} {task.text}
+        </span>
+      )}
     </div>
   )
 }
 
-// Subtask item with hover checkbox and drag
-function SubtaskItem({ task, onDone, onDragStart, onDragEnd }: {
+// Subtask item with hover checkbox, drag handle, and inline editing
+function SubtaskItem({ task, onDone, onUpdateTask, editingTaskId, setEditingTaskId, onDragStart, onDragEnd }: {
   task: Todo
   onDone: (id: number) => void
+  onUpdateTask: (id: number, updates: { text?: string }) => void
+  editingTaskId: number | null
+  setEditingTaskId: (id: number | null) => void
   onDragStart: (e: DragEvent, task: Todo) => void
   onDragEnd: () => void
 }) {
   const [hover, setHover] = useState(false)
+  const [editText, setEditText] = useState(task.text)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const isEditing = editingTaskId === task.id
+
+  const handleStartEdit = () => {
+    if (task.id) {
+      setEditText(task.text)
+      setEditingTaskId(task.id)
+    }
+  }
+
+  const handleSaveEdit = () => {
+    if (task.id && editText.trim() && editText !== task.text) {
+      onUpdateTask(task.id, { text: editText.trim() })
+    }
+    setEditingTaskId(null)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleSaveEdit()
+    } else if (e.key === 'Escape') {
+      setEditText(task.text)
+      setEditingTaskId(null)
+    }
+  }
+
+  useEffect(() => {
+    if (isEditing && inputRef.current) {
+      inputRef.current.focus()
+      inputRef.current.select()
+    }
+  }, [isEditing])
 
   return (
     <div
-      className={`rounded-md px-2 py-2 flex items-center gap-2 cursor-grab active:cursor-grabbing min-h-[40px] ${
+      className={`rounded-md px-2 py-2 flex items-center gap-2 min-h-[40px] group ${
         task.status === 'in_progress'
           ? 'bg-white shadow-sm border border-amber-200'
           : 'bg-white/60 border border-transparent'
       }`}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      draggable={!!task.id}
-      onDragStart={(e) => task.id && onDragStart(e, task)}
-      onDragEnd={onDragEnd}
     >
+      {/* Drag handle */}
+      <div
+        className="shrink-0 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity"
+        draggable={!!task.id}
+        onDragStart={(e) => task.id && onDragStart(e, task)}
+        onDragEnd={onDragEnd}
+      >
+        <DragHandle className="w-3 h-3" />
+      </div>
+      {/* Checkbox */}
       <div className="w-5 h-5 shrink-0 flex items-center justify-center">
-        {hover && task.id ? (
+        {hover && task.id && !isEditing ? (
           <button
             onClick={() => onDone(task.id!)}
             className="w-5 h-5 rounded border-2 border-emerald-500 hover:bg-emerald-500 transition-colors"
@@ -486,20 +640,36 @@ function SubtaskItem({ task, onDone, onDragStart, onDragEnd }: {
           }`}></span>
         )}
       </div>
+      {/* Text - clickable to edit */}
       <div className="flex-1 min-w-0">
-        <span className={`text-sm ${
-          task.status === 'in_progress'
-            ? 'font-bold text-[#1a1a1a]'
-            : 'font-medium text-[#374151]'
-        }`}>
-          {task.text}
-        </span>
+        {isEditing ? (
+          <input
+            ref={inputRef}
+            type="text"
+            value={editText}
+            onChange={(e) => setEditText(e.target.value)}
+            onBlur={handleSaveEdit}
+            onKeyDown={handleKeyDown}
+            className="w-full text-sm bg-white border border-blue-400 rounded px-2 py-0.5 focus:outline-none focus:ring-2 focus:ring-blue-400"
+          />
+        ) : (
+          <span
+            className={`text-sm cursor-text hover:bg-black/5 rounded px-1 -mx-1 ${
+              task.status === 'in_progress'
+                ? 'font-bold text-[#1a1a1a]'
+                : 'font-medium text-[#374151]'
+            }`}
+            onClick={handleStartEdit}
+          >
+            {task.text}
+          </span>
+        )}
       </div>
     </div>
   )
 }
 
-function Column({ title, count, color, tasks, rawList, onDone, targetList, category, onDrop, onAdd, draggedTask, onDragStart, onDragEnd }: {
+function Column({ title, count, color, tasks, rawList, onDone, targetList, category, onDrop, onAdd, onUpdateTask, editingTaskId, setEditingTaskId, expandedTasks, toggleExpanded, draggedTask, onDragStart, onDragEnd }: {
   title: string
   count: number
   color: string
@@ -508,19 +678,32 @@ function Column({ title, count, color, tasks, rawList, onDone, targetList, categ
   onDone: (id: number) => void
   targetList: string
   category?: string
-  onDrop: (id: number, targetList: string, options?: { category?: string; insertBefore?: number }) => void
+  onDrop: (id: number, targetList: string, options?: { category?: string; insertBefore?: number; asSubtaskOf?: number }) => void
   onAdd: (text: string, list: string, priority: number, parent_id?: number) => void
+  onUpdateTask: (id: number, updates: { text?: string }) => void
+  editingTaskId: number | null
+  setEditingTaskId: (id: number | null) => void
+  expandedTasks: Set<number>
+  toggleExpanded: (id: number) => void
   draggedTask: Todo | null
   onDragStart: (e: DragEvent, task: Todo) => void
   onDragEnd: () => void
 }) {
   const [dropIndex, setDropIndex] = useState<number | null>(null)
   const [newTaskText, setNewTaskText] = useState('')
+  const [subtaskDropTarget, setSubtaskDropTarget] = useState<number | null>(null)
+  const [newSubtaskText, setNewSubtaskText] = useState<{ [key: number]: string }>({})
 
   // Find category parent if this is a category column
   const categoryParentId = category && rawList
     ? rawList.find(t => !t.parent_id && t.text?.toLowerCase().includes(category.toLowerCase()))?.id
     : undefined
+
+  // Get subtasks for a task
+  const getSubtasks = (taskId: number) => {
+    if (!rawList) return []
+    return rawList.filter(t => t.parent_id === taskId && t.status !== 'done')
+  }
 
   const handleDragOver = (e: DragEvent, index: number) => {
     e.preventDefault()
@@ -586,13 +769,78 @@ function Column({ title, count, color, tasks, rawList, onDone, targetList, categ
       <div className="p-2 max-h-[500px] overflow-y-auto min-h-[60px] flex-1">
         {/* Drop zone at start */}
         <DropZone index={0} insertBeforeId={tasks[0]?.id ?? undefined} />
-        {tasks.map((task, idx) => (
-          <div key={task.id}>
-            <TaskCard task={task} onDone={onDone} onDragStart={onDragStart} onDragEnd={onDragEnd} />
-            {/* Drop zone after each item */}
-            <DropZone index={idx + 1} insertBeforeId={tasks[idx + 1]?.id ?? undefined} />
-          </div>
-        ))}
+        {tasks.map((task, idx) => {
+          const subtasks = task.id ? getSubtasks(task.id) : []
+          const isExpanded = task.id ? expandedTasks.has(task.id) : false
+          const hasSubtasks = subtasks.length > 0 || (task.childCount || 0) > 0
+          const isSubtaskDropTarget = subtaskDropTarget === task.id
+
+          return (
+            <div key={task.id}>
+              <TaskCard
+                task={task}
+                onDone={onDone}
+                onUpdateTask={onUpdateTask}
+                editingTaskId={editingTaskId}
+                setEditingTaskId={setEditingTaskId}
+                onDragStart={onDragStart}
+                onDragEnd={onDragEnd}
+                hasSubtasks={hasSubtasks}
+                isExpanded={isExpanded}
+                onToggleExpand={() => task.id && toggleExpanded(task.id)}
+                isSubtaskDropTarget={isSubtaskDropTarget}
+                onSubtaskDragOver={() => task.id && setSubtaskDropTarget(task.id)}
+                onSubtaskDragLeave={() => setSubtaskDropTarget(null)}
+                onSubtaskDrop={(droppedId) => {
+                  setSubtaskDropTarget(null)
+                  if (task.id) {
+                    onDrop(droppedId, targetList, { asSubtaskOf: task.id })
+                  }
+                }}
+              />
+              {/* Expanded subtasks */}
+              {isExpanded && (
+                <div className="ml-6 border-l-2 border-gray-200 pl-2 mb-2">
+                  {subtasks.map(sub => (
+                    <div key={sub.id} className="py-1">
+                      <SubtaskItem
+                        task={sub}
+                        onDone={onDone}
+                        onUpdateTask={onUpdateTask}
+                        editingTaskId={editingTaskId}
+                        setEditingTaskId={setEditingTaskId}
+                        onDragStart={onDragStart}
+                        onDragEnd={onDragEnd}
+                      />
+                    </div>
+                  ))}
+                  {/* Add subtask input when expanded */}
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault()
+                      const text = newSubtaskText[task.id!] || ''
+                      if (text.trim() && task.id) {
+                        onAdd(text.trim(), targetList, 2, task.id)
+                        setNewSubtaskText(prev => ({ ...prev, [task.id!]: '' }))
+                      }
+                    }}
+                    className="mt-1"
+                  >
+                    <input
+                      type="text"
+                      value={newSubtaskText[task.id!] || ''}
+                      onChange={(e) => setNewSubtaskText(prev => ({ ...prev, [task.id!]: e.target.value }))}
+                      placeholder="+ Add subtask..."
+                      className="w-full px-2 py-1 text-xs bg-white/80 border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-blue-400 placeholder:text-gray-400"
+                    />
+                  </form>
+                </div>
+              )}
+              {/* Drop zone after each item */}
+              <DropZone index={idx + 1} insertBeforeId={tasks[idx + 1]?.id ?? undefined} />
+            </div>
+          )
+        })}
         {tasks.length === 0 && (
           <div
             className="text-center text-sm text-[#9b9a97] py-8 border-2 border-dashed border-gray-200 rounded"
@@ -626,43 +874,140 @@ function Column({ title, count, color, tasks, rawList, onDone, targetList, categ
   )
 }
 
-function TaskCard({ task, onDone, onDragStart, onDragEnd }: {
+function TaskCard({ task, onDone, onUpdateTask, editingTaskId, setEditingTaskId, onDragStart, onDragEnd, hasSubtasks, isExpanded, onToggleExpand, isSubtaskDropTarget, onSubtaskDragOver, onSubtaskDragLeave, onSubtaskDrop }: {
   task: Todo & { category?: string; childCount?: number }
   onDone: (id: number) => void
+  onUpdateTask: (id: number, updates: { text?: string }) => void
+  editingTaskId: number | null
+  setEditingTaskId: (id: number | null) => void
   onDragStart: (e: DragEvent, task: Todo) => void
   onDragEnd: () => void
+  hasSubtasks: boolean
+  isExpanded: boolean
+  onToggleExpand: () => void
+  isSubtaskDropTarget: boolean
+  onSubtaskDragOver: () => void
+  onSubtaskDragLeave: () => void
+  onSubtaskDrop: (droppedId: number) => void
 }) {
   const [hover, setHover] = useState(false)
+  const [editText, setEditText] = useState(task.text)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const isEditing = editingTaskId === task.id
   const isInProgress = task.status === 'in_progress'
-  const hasSubtasks = (task.childCount || 0) > 0
+
+  const handleStartEdit = () => {
+    if (task.id) {
+      setEditText(task.text)
+      setEditingTaskId(task.id)
+    }
+  }
+
+  const handleSaveEdit = () => {
+    if (task.id && editText.trim() && editText !== task.text) {
+      onUpdateTask(task.id, { text: editText.trim() })
+    }
+    setEditingTaskId(null)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleSaveEdit()
+    } else if (e.key === 'Escape') {
+      setEditText(task.text)
+      setEditingTaskId(null)
+    }
+  }
+
+  const handleDragOver = (e: DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    onSubtaskDragOver()
+  }
+
+  const handleDrop = (e: DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const id = parseInt(e.dataTransfer.getData('text/plain'))
+    if (id && id !== task.id) {
+      onSubtaskDrop(id)
+    }
+  }
+
+  useEffect(() => {
+    if (isEditing && inputRef.current) {
+      inputRef.current.focus()
+      inputRef.current.select()
+    }
+  }, [isEditing])
 
   return (
     <div
-      className={`bg-white rounded px-2 py-2 mb-1 shadow-sm hover:bg-[#fafafa] cursor-grab active:cursor-grabbing transition-colors flex items-center gap-2 min-h-[36px] ${
+      className={`bg-white rounded px-2 py-2 mb-1 shadow-sm hover:bg-[#fafafa] transition-colors flex items-center gap-2 min-h-[36px] group ${
         isInProgress ? 'border-l-2 border-[#ffc83d]' : ''
-      }`}
+      } ${isSubtaskDropTarget ? 'ring-2 ring-blue-400 ring-offset-1' : ''}`}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      draggable={!!task.id}
-      onDragStart={(e) => task.id && onDragStart(e, task)}
-      onDragEnd={onDragEnd}
+      onDragOver={handleDragOver}
+      onDragLeave={onSubtaskDragLeave}
+      onDrop={handleDrop}
     >
-      <div className="w-5 h-5 shrink-0 flex items-center justify-center">
-        {hover && task.id ? (
-          <button
-            onClick={(e) => { e.stopPropagation(); onDone(task.id!); }}
-            className="w-5 h-5 rounded border-2 border-emerald-500 hover:bg-emerald-500 transition-colors"
-            title="Mark as done"
-          />
-        ) : (
-          <span className="text-[9px] text-[#b0b0b0]">#{task.id}</span>
-        )}
+      {/* Drag handle */}
+      <div
+        className="shrink-0 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity"
+        draggable={!!task.id}
+        onDragStart={(e) => task.id && onDragStart(e, task)}
+        onDragEnd={onDragEnd}
+      >
+        <DragHandle className="w-3 h-3" />
       </div>
+      {/* Expand/collapse button */}
+      {hasSubtasks ? (
+        <button
+          onClick={(e) => { e.stopPropagation(); onToggleExpand(); }}
+          className="w-5 h-5 shrink-0 flex items-center justify-center text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors"
+          title={isExpanded ? 'Collapse' : 'Expand'}
+        >
+          <svg className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-90' : ''}`} fill="currentColor" viewBox="0 0 20 20">
+            <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
+          </svg>
+        </button>
+      ) : (
+        <div className="w-5 h-5 shrink-0 flex items-center justify-center">
+          {hover && task.id && !isEditing ? (
+            <button
+              onClick={(e) => { e.stopPropagation(); onDone(task.id!); }}
+              className="w-5 h-5 rounded border-2 border-emerald-500 hover:bg-emerald-500 transition-colors"
+              title="Mark as done"
+            />
+          ) : (
+            <span className="text-[9px] text-[#b0b0b0]">#{task.id}</span>
+          )}
+        </div>
+      )}
       {isInProgress && <span className="text-[10px] px-1 py-0.5 rounded bg-[#fef3c7] text-[#d97706] shrink-0" title="In Progress">●</span>}
-      <span className="text-sm text-[#37352f] truncate">{task.text}</span>
+      {/* Text - clickable to edit */}
+      {isEditing ? (
+        <input
+          ref={inputRef}
+          type="text"
+          value={editText}
+          onChange={(e) => setEditText(e.target.value)}
+          onBlur={handleSaveEdit}
+          onKeyDown={handleKeyDown}
+          className="flex-1 text-sm bg-white border border-blue-400 rounded px-2 py-0.5 focus:outline-none focus:ring-2 focus:ring-blue-400"
+        />
+      ) : (
+        <span
+          className="text-sm text-[#37352f] truncate cursor-text hover:bg-black/5 rounded px-1 -mx-1"
+          onClick={handleStartEdit}
+        >
+          {task.text}
+        </span>
+      )}
       {hasSubtasks && (
         <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-600 shrink-0 ml-auto">
-          {task.childCount} sub
+          {task.childCount || '+'} sub
         </span>
       )}
     </div>
@@ -677,11 +1022,17 @@ function DoneItem({ task, onDragStart, onDragEnd }: {
 }) {
   return (
     <div
-      className="bg-white rounded px-3 py-2 flex items-center gap-2 shadow-sm cursor-grab active:cursor-grabbing hover:bg-gray-50 transition-colors"
-      draggable={!!task.id}
-      onDragStart={(e) => task.id && onDragStart(e, task)}
-      onDragEnd={onDragEnd}
+      className="bg-white rounded px-3 py-2 flex items-center gap-2 shadow-sm hover:bg-gray-50 transition-colors group"
     >
+      {/* Drag handle */}
+      <div
+        className="shrink-0 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity"
+        draggable={!!task.id}
+        onDragStart={(e) => task.id && onDragStart(e, task)}
+        onDragEnd={onDragEnd}
+      >
+        <DragHandle className="w-3 h-3" />
+      </div>
       <span className="w-4 h-4 rounded-full bg-emerald-400 shrink-0 flex items-center justify-center text-white text-[10px]">✓</span>
       <span className="text-[10px] text-[#9b9a97]">#{task.id}</span>
       <span className="text-sm text-[#6b6b6b] line-through truncate">{task.text}</span>
