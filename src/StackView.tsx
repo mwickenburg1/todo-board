@@ -162,7 +162,7 @@ export default function StackView({ onSwitchView }: { onSwitchView: () => void }
   return (
     <div className="min-h-screen bg-white pb-16">
       {/* Header */}
-      <div className="max-w-5xl mx-auto px-8 pt-8 pb-6">
+      <div className="max-w-6xl mx-auto px-8 pt-8 pb-6">
         <div className="flex items-baseline justify-between">
           <h1 className="text-2xl font-bold text-gray-800">Tasks</h1>
           <button
@@ -175,7 +175,7 @@ export default function StackView({ onSwitchView }: { onSwitchView: () => void }
       </div>
 
       {/* Stacks */}
-      <div className="max-w-5xl mx-auto px-8">
+      <div className="max-w-6xl mx-auto px-8">
         {stackNames.map((name, i) => (
           <div key={name}>
             {/* Root-level gap before each section */}

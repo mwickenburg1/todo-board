@@ -326,7 +326,7 @@ export function StackSection({ name, actionable, waiting, collapsed, onToggle, o
       </div>
 
       {!collapsed && (
-        <div className="flex gap-10 pl-5">
+        <div className="flex gap-8 pl-5">
           <div className="flex-1 min-w-0">
             <div className="text-[10px] uppercase tracking-wider text-gray-400 mb-2 font-medium">
               Actionable

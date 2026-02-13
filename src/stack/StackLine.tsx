@@ -262,13 +262,13 @@ export const StackLine = memo(function StackLine({ item, onDone, onUpdate, onTog
       data-nav-col={navCol}
       data-nav-section={navSection}
       data-nav-idx={navIdx !== undefined ? navIdx : undefined}
-      className={`group flex items-center gap-2 py-1.5 px-1.5 transition-colors ${hover ? 'bg-gray-50' : ''} ${isChild ? 'ml-5' : ''}`}
+      className={`group relative flex items-center gap-2 py-1.5 pr-1.5 transition-colors ${hover ? 'bg-gray-50' : ''} ${isChild ? 'ml-5' : ''}`}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >
-      {/* Drag handle */}
+      {/* Drag handle — positioned in the left margin */}
       <span
-        className="shrink-0 cursor-grab active:cursor-grabbing opacity-15 group-hover:opacity-50 transition-opacity select-none text-xs text-gray-400 w-5 inline-flex items-center justify-center self-stretch"
+        className="absolute -left-5 top-0 bottom-0 w-5 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-40 transition-opacity select-none text-xs text-gray-400 inline-flex items-center justify-center"
         draggable={!!item.id}
         onDragStart={(e) => {
           if (!item.id) return
