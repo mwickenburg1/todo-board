@@ -12,8 +12,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@slack/socket-mode": "^2.0.5",
-    "@slack/web-api": "^7.14.1",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "react": "^19.2.0",

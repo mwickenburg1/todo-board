@@ -9,13 +9,9 @@
  *   node server/event-hub.js
  *
  * Env vars:
- *   SLACK_BOT_TOKEN   — Slack bot token (xoxb-...) for API calls
- *   SLACK_APP_TOKEN   — Slack app-level token (xapp-...) for Socket Mode
+ *   SLACK_USER_TOKEN  — Slack user token (xoxp-...) — sees all your channels/DMs
  *   TODO_API_URL      — Base URL for the todo API (default: http://localhost:5181)
  */
-
-import { SocketModeClient } from '@slack/socket-mode'
-import { WebClient } from '@slack/web-api'
 
 const TODO_API = process.env.TODO_API_URL || 'http://localhost:5181'
 
@@ -106,87 +102,89 @@ class EventHub {
   }
 }
 
-// --- Slack Socket Mode Plugin ---
-// Uses Socket Mode for real-time message events. No polling needed.
+// --- Slack User Token Polling Plugin ---
+// Polls conversations.replies for watched threads using a user token (xoxp-...).
+// User token sees all channels/DMs you're in — no bot installation needed.
 // Link ref format: "C0ABC123/1234567890.123456" (channel/thread_ts)
-// Requires SLACK_BOT_TOKEN (xoxb-...) and SLACK_APP_TOKEN (xapp-...).
-// Slack app needs: connections:write, channels:history, groups:history scopes
-// and Socket Mode enabled + message event subscription.
 
 function createSlackPlugin() {
-  const botToken = process.env.SLACK_BOT_TOKEN
-  const appToken = process.env.SLACK_APP_TOKEN
+  const token = process.env.SLACK_USER_TOKEN
 
-  if (!appToken || !botToken) {
-    console.log('[slack] Missing SLACK_BOT_TOKEN or SLACK_APP_TOKEN, skipping')
+  if (!token) {
+    console.log('[slack] Missing SLACK_USER_TOKEN, skipping')
     return null
   }
 
   let dispatch = null
   let watchRefs = new Set()
-  let socketClient = null
-  const web = new WebClient(botToken)
+  let pollTimer = null
+  // Track last-seen message ts per thread to only dispatch new messages
+  const lastSeen = {}
+
+  async function slackAPI(method, params = {}) {
+    const url = new URL(`https://slack.com/api/${method}`)
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+    return res.json()
+  }
+
+  async function pollThread(ref) {
+    const [channel, thread_ts] = ref.split('/')
+    if (!channel || !thread_ts) return
+
+    try {
+      const params = { channel, ts: thread_ts, limit: '10' }
+      if (lastSeen[ref]) params.oldest = lastSeen[ref]
+
+      const result = await slackAPI('conversations.replies', params)
+      if (!result.ok) {
+        if (result.error !== 'thread_not_found') {
+          console.error(`[slack] API error for ${ref}: ${result.error}`)
+        }
+        return
+      }
+
+      const messages = result.messages || []
+      const newMessages = messages.filter(m => {
+        if (m.ts === thread_ts) return false
+        if (lastSeen[ref] && m.ts <= lastSeen[ref]) return false
+        return true
+      })
+
+      for (const msg of newMessages) {
+        await dispatch(ref, {
+          summary: (msg.text || '').slice(0, 200),
+          author: msg.user || 'unknown',
+          ts: new Date(parseFloat(msg.ts) * 1000).toISOString(),
+          metadata: { channel, thread_ts, message_ts: msg.ts, subtype: msg.subtype }
+        })
+      }
+
+      if (messages.length > 0) {
+        lastSeen[ref] = messages[messages.length - 1].ts
+      }
+    } catch (err) {
+      console.error(`[slack] Poll error for ${ref}:`, err.message)
+    }
+  }
+
+  async function pollAll() {
+    if (watchRefs.size === 0) return
+    for (const ref of watchRefs) {
+      await pollThread(ref)
+      // Small delay between API calls to respect rate limits
+      await new Promise(r => setTimeout(r, 500))
+    }
+  }
 
   return {
     type: 'slack_thread',
 
     async start(dispatchFn) {
       dispatch = dispatchFn
-
-      socketClient = new SocketModeClient({ appToken })
-
-      // Listen for message events
-      socketClient.on('message', async ({ event, ack }) => {
-        await ack()
-
-        // Only care about threaded messages in channels we're watching
-        if (!event || !event.thread_ts || !event.channel) return
-
-        const ref = `${event.channel}/${event.thread_ts}`
-        if (!watchRefs.has(ref)) return
-
-        // Skip bot messages that are our own
-        if (event.bot_id) return
-
-        await dispatch(ref, {
-          summary: (event.text || '').slice(0, 200),
-          author: event.user || 'unknown',
-          ts: new Date(parseFloat(event.ts) * 1000).toISOString(),
-          metadata: {
-            channel: event.channel,
-            thread_ts: event.thread_ts,
-            message_ts: event.ts,
-            subtype: event.subtype
-          }
-        })
-      })
-
-      // Also listen for reactions on watched threads
-      socketClient.on('reaction_added', async ({ event, ack }) => {
-        await ack()
-        if (!event || !event.item?.ts || !event.item?.channel) return
-
-        const ref = `${event.item.channel}/${event.item.ts}`
-        if (!watchRefs.has(ref)) return
-
-        await dispatch(ref, {
-          summary: `:${event.reaction}: reaction`,
-          author: event.user || 'unknown',
-          ts: new Date(parseFloat(event.event_ts) * 1000).toISOString(),
-          metadata: { channel: event.item.channel, thread_ts: event.item.ts, reaction: event.reaction }
-        })
-      })
-
-      socketClient.on('connected', () => {
-        console.log(`[slack] Socket Mode connected`)
-      })
-
-      socketClient.on('disconnected', () => {
-        console.log(`[slack] Socket Mode disconnected, will reconnect...`)
-      })
-
-      await socketClient.start()
-      console.log(`[slack] Plugin ready (Socket Mode, bot: ${botToken.slice(0, 8)}...)`)
+      console.log(`[slack] Plugin ready (user token polling, token: ${token.slice(0, 8)}...)`)
+      // Poll every 15s for near-real-time updates
+      pollTimer = setInterval(pollAll, 15000)
     },
 
     updateWatchList(refs) {
@@ -195,10 +193,12 @@ function createSlackPlugin() {
       if (watchRefs.size !== prev) {
         console.log(`[slack] Watching ${watchRefs.size} thread(s)`)
       }
+      // Immediately poll new threads
+      if (watchRefs.size > prev) pollAll()
     },
 
     async stop() {
-      if (socketClient) await socketClient.disconnect()
+      if (pollTimer) clearInterval(pollTimer)
       console.log('[slack] Stopped')
     }
   }
