@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import type { DragEvent } from 'react'
+import StackView from './StackView'
 
 interface Todo {
   id: number | null
@@ -13,6 +14,7 @@ interface Todo {
   focus_slot?: string
   is_empty_slot?: boolean
   stored_category?: string
+  in_progress_order?: number
 }
 
 interface TodoData {
@@ -79,12 +81,15 @@ function filterByCategory(tasks: (Todo & { category?: string })[], category: str
 }
 
 function App() {
+  const [view, setView] = useState<'board' | 'stack'>(() => {
+    return (localStorage.getItem('todo-view') as 'board' | 'stack') || 'stack'
+  })
   const [data, setData] = useState<TodoData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [draggedTask, setDraggedTask] = useState<Todo | null>(null)
   const [editingTaskId, setEditingTaskId] = useState<number | null>(null)
   const [expandedTasks, setExpandedTasks] = useState<Set<number>>(new Set())
-  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set(['tomorrow', 'backlog', 'done']))
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set(['today', 'tomorrow', 'backlog', 'done']))
 
   const fetchData = useCallback(() => {
     fetch('/api/todos')
@@ -180,6 +185,38 @@ function App() {
     await moveTask(id, toList, { category })
   }, [moveTask])
 
+  // Reorder in-progress items (must be before early returns)
+  const reorderInProgress = useCallback(async (draggedId: number, targetIndex: number, currentItems: Todo[]) => {
+    const currentIndex = currentItems.findIndex(t => t.id === draggedId)
+    if (currentIndex === -1) return
+
+    // Adjust target index: when moving forward, subtract 1 because the item will be removed first
+    let adjustedIndex = targetIndex
+    if (currentIndex < targetIndex) {
+      adjustedIndex = targetIndex - 1
+    }
+
+    if (currentIndex === adjustedIndex) return
+
+    // Calculate new order values
+    const newOrder = [...currentItems]
+    const [moved] = newOrder.splice(currentIndex, 1)
+    newOrder.splice(adjustedIndex, 0, moved)
+
+    // Update order values for all items
+    for (let i = 0; i < newOrder.length; i++) {
+      const task = newOrder[i]
+      if (task.id && task.in_progress_order !== i) {
+        await fetch(`/api/todos/${task.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ in_progress_order: i })
+        })
+      }
+    }
+    fetchData()
+  }, [fetchData])
+
   const handleDragStart = (e: DragEvent, task: Todo) => {
     setDraggedTask(task)
     e.dataTransfer.effectAllowed = 'move'
@@ -188,6 +225,10 @@ function App() {
 
   const handleDragEnd = () => {
     setDraggedTask(null)
+  }
+
+  if (view === 'stack') {
+    return <StackView onSwitchView={() => { setView('board'); localStorage.setItem('todo-view', 'board') }} />
   }
 
   if (error) return <div className="p-8 text-red-500">Error: {error}</div>
@@ -204,6 +245,14 @@ function App() {
   const tomorrowTasks = processList(tomorrow)
   const backlogTasks = processList(backlog)
   const monitoringTasks = sortByStatus(monitoring)
+
+  // Collect all in_progress items from all lists, sorted by in_progress_order
+  const allInProgress = [
+    ...today.filter(t => t.status === 'in_progress'),
+    ...tomorrow.filter(t => t.status === 'in_progress'),
+    ...backlog.filter(t => t.status === 'in_progress'),
+    ...monitoring.filter(t => t.status === 'in_progress'),
+  ].sort((a, b) => (a.in_progress_order ?? 999) - (b.in_progress_order ?? 999))
 
   const todayLongRunning = filterByCategory(todayTasks, 'long-running')
   const todaySync = filterByCategory(todayTasks, 'sync')
@@ -223,31 +272,59 @@ function App() {
 
   return (
     <div className="min-h-screen bg-white p-10">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-[#37352f] mb-2">Task Board</h1>
-        <p className="text-sm text-[#9b9a97]">{todayActiveCount + tomorrowActiveCount} active tasks</p>
+      <div className="mb-8 flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-medium text-[#9b9a97] mb-2">Task Board</h1>
+          <p className="text-sm text-[#9b9a97]">{todayActiveCount + tomorrowActiveCount} active tasks</p>
+        </div>
+        <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-0.5">
+          <button className="px-3 py-1.5 text-xs font-medium bg-white text-gray-800 rounded-md shadow-sm">
+            Board
+          </button>
+          <button
+            onClick={() => { setView('stack'); localStorage.setItem('todo-view', 'stack') }}
+            className="px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-gray-700 rounded-md transition-colors"
+          >
+            Stack
+          </button>
+        </div>
       </div>
+
+      {/* In Progress - items actively being worked on */}
+      {allInProgress.length > 0 && (
+        <InProgressSection
+          tasks={allInProgress}
+          onDone={markDone}
+          onUpdateTask={updateTask}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+          draggedTask={draggedTask}
+          onReorder={(draggedId, targetIndex) => reorderInProgress(draggedId, targetIndex, allInProgress)}
+        />
+      )}
 
       {/* Active Focus */}
       <h2 className="text-xs font-semibold text-[#37352f] uppercase tracking-wide mb-4">Active Focus</h2>
-      <div className="flex gap-4 mb-10">
+      <div className="flex gap-4 mb-10 overflow-x-auto pb-2">
         {[...now].sort((a, b) => {
-          const slotA = a.focus_slot || ''
-          const slotB = b.focus_slot || ''
-          const aIsEnv = slotA.toLowerCase().startsWith('env')
-          const bIsEnv = slotB.toLowerCase().startsWith('env')
-          if (aIsEnv && !bIsEnv) return -1
-          if (!aIsEnv && bIsEnv) return 1
-          return slotA.localeCompare(slotB)
+          const order: Record<string, number> = { env1: 0, env2: 1, env3: 2, env4: 3, env5: 4, env6: 5, env7: 6, env8: 7, sync: 8 }
+          const posA = order[(a.focus_slot || '').toLowerCase()] ?? 99
+          const posB = order[(b.focus_slot || '').toLowerCase()] ?? 99
+          return posA - posB
         }).map((task, idx) => {
           const isEmpty = task.is_empty_slot || !task.id
           const subtasks = isEmpty ? [] : today.filter(t => t.parent_id === task.id && t.status !== 'done')
 
           const accents = [
-            { border: '#6b21a8', bg: '#faf5ff', label: '#6b21a8' },
-            { border: '#2563eb', bg: '#eff6ff', label: '#2563eb' },
-            { border: '#059669', bg: '#ecfdf5', label: '#059669' },
-            { border: '#d97706', bg: '#fffbeb', label: '#d97706' },
+            { border: '#c4b5fd', bg: '#faf5ff', label: '#a78bfa' },  // purple - env1
+            { border: '#93c5fd', bg: '#eff6ff', label: '#60a5fa' },  // blue - env2
+            { border: '#6ee7b7', bg: '#ecfdf5', label: '#34d399' },  // green - env3
+            { border: '#f9a8d4', bg: '#fdf2f8', label: '#f472b6' },  // pink - env4
+            { border: '#fdba74', bg: '#fff7ed', label: '#fb923c' },  // orange - env5
+            { border: '#67e8f9', bg: '#ecfeff', label: '#22d3ee' },  // cyan - env6
+            { border: '#a5b4fc', bg: '#eef2ff', label: '#818cf8' },  // indigo - env7
+            { border: '#86efac', bg: '#f0fdf4', label: '#4ade80' },  // lime-green - env8
+            { border: '#fcd34d', bg: '#fffbeb', label: '#fbbf24' },  // amber - sync
           ]
           const accent = accents[idx % accents.length]
 
@@ -275,16 +352,30 @@ function App() {
       </div>
 
       {/* Today Board */}
-      <h2 className="text-xs font-semibold text-[#37352f] uppercase tracking-wide mb-3 flex items-center gap-2">
+      <h2
+        className="text-xs font-semibold text-[#37352f] uppercase tracking-wide mb-3 flex items-center gap-2 select-none hover:text-[#5a5a5a] transition-colors cursor-pointer [&>*]:pointer-events-none"
+        onClick={() => setCollapsedSections(prev => {
+          const next = new Set(prev)
+          if (next.has('today')) next.delete('today')
+          else next.add('today')
+          return next
+        })}
+      >
+        <svg className={`w-3 h-3 transition-transform ${collapsedSections.has('today') ? '-rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
         <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
         Today
         <span className="text-[#9b9a97] font-normal ml-1">({todayActiveCount})</span>
       </h2>
-      <div className="flex gap-4 overflow-x-auto pb-4 mb-8">
-        <Column title="Long-running" count={todayLongRunning.length} color="#6b21a8" tasks={todayLongRunning} rawList={today} onDone={markDone} targetList="today" category="long-running" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDemote={(id) => demoteTask(id, 'tomorrow', 'long-running')} />
-        <Column title="Sync" count={todaySync.length} color="#c2410c" tasks={todaySync} rawList={today} onDone={markDone} targetList="today" category="sync" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDemote={(id) => demoteTask(id, 'tomorrow', 'sync')} />
-        <Column title="Monitoring" count={monitoringTasks.length} color="#529cca" tasks={monitoringTasks} onDone={markDone} targetList="monitoring" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDemote={(id) => demoteTask(id, 'tomorrow', 'monitoring')} />
-      </div>
+      {!collapsedSections.has('today') && (
+        <div className="flex gap-4 overflow-x-auto pb-4 mb-8">
+          <Column title="Long-running" count={todayLongRunning.length} color="#6b21a8" tasks={todayLongRunning} rawList={today} onDone={markDone} targetList="today" category="long-running" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDemote={(id) => demoteTask(id, 'tomorrow', 'long-running')} />
+          <Column title="Sync" count={todaySync.length} color="#c2410c" tasks={todaySync} rawList={today} onDone={markDone} targetList="today" category="sync" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDemote={(id) => demoteTask(id, 'tomorrow', 'sync')} />
+          <Column title="Monitoring" count={monitoringTasks.length} color="#529cca" tasks={monitoringTasks} onDone={markDone} targetList="monitoring" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDemote={(id) => demoteTask(id, 'tomorrow', 'monitoring')} />
+        </div>
+      )}
+      {collapsedSections.has('today') && <div className="mb-8" />}
 
       {/* Tomorrow Board */}
       <h2
@@ -467,7 +558,7 @@ function FocusSlot({ task, isEmpty, subtasks, accent, idx, onDone, onDropAsSubta
 
   return (
     <div
-      className={`flex-1 rounded-lg border-l-4 shadow-sm transition-all ${anyDragOver ? 'ring-2 ring-offset-2' : ''}`}
+      className={`flex-1 min-w-[500px] rounded-lg border-l-4 shadow-sm transition-all ${anyDragOver ? 'ring-2 ring-offset-2' : ''}`}
       style={{
         borderLeftColor: accent.border,
         background: accent.bg,
@@ -513,7 +604,7 @@ function FocusSlot({ task, isEmpty, subtasks, accent, idx, onDone, onDropAsSubta
                 <SubtaskDropZone index={0} />
                 {subtasks.map((sub, subIdx) => (
                   <div key={sub.id}>
-                    <SubtaskItem task={sub} onDone={onDone} onUpdateTask={onUpdateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} onDragStart={onDragStart} onDragEnd={onDragEnd} />
+                    <SubtaskItem task={sub} onDone={onDone} onUpdateTask={onUpdateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} onDragStart={onDragStart} onDragEnd={onDragEnd} isTopmost={subIdx === 0} />
                     <SubtaskDropZone index={subIdx + 1} />
                   </div>
                 ))}
@@ -601,7 +692,7 @@ function FocusTaskItem({ task, onDone, onUpdateTask, editingTaskId, setEditingTa
 
   return (
     <div
-      className="text-lg font-bold mb-1 text-[#1a1a1a] flex items-center gap-2 group min-h-[32px]"
+      className="text-base font-medium mb-1 text-[#6b7280] flex items-center gap-2 group min-h-[32px]"
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >
@@ -621,9 +712,10 @@ function FocusTaskItem({ task, onDone, onUpdateTask, editingTaskId, setEditingTa
           type="text"
           value={editText}
           onChange={(e) => setEditText(e.target.value)}
-          onBlur={handleSaveEdit}
           onKeyDown={handleKeyDown}
-          className="flex-1 text-lg font-bold bg-white border border-blue-400 rounded px-2 py-0.5 focus:outline-none focus:ring-2 focus:ring-blue-400"
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          className="flex-1 text-base font-medium bg-white border border-blue-400 rounded px-2 py-0.5 focus:outline-none focus:ring-2 focus:ring-blue-400"
         />
       ) : (
         <span
@@ -648,14 +740,15 @@ function FocusTaskItem({ task, onDone, onUpdateTask, editingTaskId, setEditingTa
 }
 
 // Subtask item with hover checkbox, drag handle, and inline editing
-function SubtaskItem({ task, onDone, onUpdateTask, editingTaskId, setEditingTaskId, onDragStart, onDragEnd }: {
+function SubtaskItem({ task, onDone, onUpdateTask, editingTaskId, setEditingTaskId, onDragStart, onDragEnd, isTopmost = false }: {
   task: Todo
   onDone: (id: number, recursive?: boolean) => void
-  onUpdateTask: (id: number, updates: { text?: string }) => void
+  onUpdateTask: (id: number, updates: { text?: string; status?: string }) => void
   editingTaskId: number | null
   setEditingTaskId: (id: number | null) => void
   onDragStart: (e: DragEvent, task: Todo) => void
   onDragEnd: () => void
+  isTopmost?: boolean
 }) {
   const [hover, setHover] = useState(false)
   const [editText, setEditText] = useState(task.text)
@@ -695,9 +788,9 @@ function SubtaskItem({ task, onDone, onUpdateTask, editingTaskId, setEditingTask
   return (
     <div
       className={`rounded-md px-2 py-2 flex items-center gap-2 min-h-[40px] group ${
-        task.status === 'in_progress'
+        isTopmost || task.status === 'in_progress'
           ? 'bg-white shadow-sm border border-amber-200'
-          : 'bg-white/60 border border-transparent'
+          : 'bg-white/40 border border-transparent'
       }`}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
@@ -713,9 +806,9 @@ function SubtaskItem({ task, onDone, onUpdateTask, editingTaskId, setEditingTask
       </div>
       {/* Status indicator */}
       <span className={`w-3 h-3 rounded-full shrink-0 ${
-        task.status === 'in_progress'
+        isTopmost || task.status === 'in_progress'
           ? 'bg-amber-400 ring-2 ring-amber-400/20'
-          : 'bg-gray-300'
+          : 'bg-gray-200'
       }`}></span>
       {/* Text - clickable to edit */}
       <div className="flex-1 min-w-0">
@@ -732,9 +825,9 @@ function SubtaskItem({ task, onDone, onUpdateTask, editingTaskId, setEditingTask
         ) : (
           <span
             className={`text-sm cursor-text hover:bg-black/5 rounded px-1 -mx-1 ${
-              task.status === 'in_progress'
+              isTopmost || task.status === 'in_progress'
                 ? 'font-bold text-[#1a1a1a]'
-                : 'font-medium text-[#374151]'
+                : 'font-normal text-[#6b7280]'
             }`}
             onClick={handleStartEdit}
           >
@@ -742,8 +835,25 @@ function SubtaskItem({ task, onDone, onUpdateTask, editingTaskId, setEditingTask
           </span>
         )}
       </div>
-      {/* Checkbox on the right */}
-      <div className="w-5 h-5 shrink-0 flex items-center justify-center">
+      {/* Action buttons on the right */}
+      <div className="shrink-0 flex items-center gap-3">
+        {/* In-progress toggle */}
+        {hover && task.id && !isEditing ? (
+          <button
+            onClick={() => onUpdateTask(task.id!, { status: task.status === 'in_progress' ? 'pending' : 'in_progress' })}
+            className={`w-5 h-5 rounded flex items-center justify-center transition-colors ${
+              task.status === 'in_progress'
+                ? 'bg-amber-400 text-white hover:bg-amber-500'
+                : 'text-gray-400 hover:text-amber-600 hover:bg-amber-50 border border-gray-300'
+            }`}
+            title={task.status === 'in_progress' ? 'Remove in-progress' : 'Mark as in-progress'}
+          >
+            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+            </svg>
+          </button>
+        ) : null}
+        {/* Checkbox */}
         {hover && task.id && !isEditing ? (
           <button
             onClick={() => onDone(task.id!)}
@@ -843,7 +953,7 @@ function Column({ title, count, color, tasks, rawList, onDone, targetList, categ
 
   return (
     <div
-      className="bg-[#f7f6f3] rounded-lg min-w-[420px] max-w-[420px] transition-all flex flex-col"
+      className="bg-[#f7f6f3] rounded-lg min-w-[550px] max-w-[550px] transition-all flex flex-col"
       onDragLeave={handleDragLeave}
     >
       <div className="p-3 border-b border-[#e9e9e7] flex items-center gap-2">
@@ -968,7 +1078,7 @@ function Column({ title, count, color, tasks, rawList, onDone, targetList, categ
 function TaskCard({ task, onDone, onUpdateTask, editingTaskId, setEditingTaskId, onDragStart, onDragEnd, hasSubtasks, isExpanded, onToggleExpand, isSubtaskDropTarget, onSubtaskDragOver, onSubtaskDragLeave, onSubtaskDrop, onPromote, onDemote }: {
   task: Todo & { category?: string; childCount?: number }
   onDone: (id: number, recursive?: boolean) => void
-  onUpdateTask: (id: number, updates: { text?: string }) => void
+  onUpdateTask: (id: number, updates: { text?: string; status?: string }) => void
   editingTaskId: number | null
   setEditingTaskId: (id: number | null) => void
   onDragStart: (e: DragEvent, task: Todo) => void
@@ -1076,8 +1186,9 @@ function TaskCard({ task, onDone, onUpdateTask, editingTaskId, setEditingTaskId,
           type="text"
           value={editText}
           onChange={(e) => setEditText(e.target.value)}
-          onBlur={handleSaveEdit}
           onKeyDown={handleKeyDown}
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
           className="flex-1 text-sm bg-white border border-blue-400 rounded px-2 py-0.5 focus:outline-none focus:ring-2 focus:ring-blue-400"
         />
       ) : (
@@ -1119,6 +1230,22 @@ function TaskCard({ task, onDone, onUpdateTask, editingTaskId, setEditingTaskId,
             </svg>
           </button>
         )}
+        {/* In-progress toggle */}
+        {hover && task.id && !isEditing && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onUpdateTask(task.id!, { status: isInProgress ? 'pending' : 'in_progress' }); }}
+            className={`w-5 h-5 rounded flex items-center justify-center transition-colors ${
+              isInProgress
+                ? 'bg-amber-400 text-white hover:bg-amber-500'
+                : 'text-gray-400 hover:text-amber-600 hover:bg-amber-50 border border-gray-300'
+            }`}
+            title={isInProgress ? 'Remove in-progress' : 'Mark as in-progress'}
+          >
+            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+            </svg>
+          </button>
+        )}
         {/* Checkbox */}
         {hover && task.id && !isEditing ? (
           <button
@@ -1127,6 +1254,253 @@ function TaskCard({ task, onDone, onUpdateTask, editingTaskId, setEditingTaskId,
             title={hasSubtasks ? "Mark as done (with subtasks)" : "Mark as done"}
           />
         ) : null}
+      </div>
+    </div>
+  )
+}
+
+// In Progress section with drag-drop reordering
+function InProgressSection({ tasks, onDone, onUpdateTask, onDragStart, onDragEnd, draggedTask, onReorder }: {
+  tasks: Todo[]
+  onDone: (id: number) => void
+  onUpdateTask: (id: number, updates: { text?: string; status?: string }) => void
+  onDragStart: (e: DragEvent, task: Todo) => void
+  onDragEnd: () => void
+  draggedTask: Todo | null
+  onReorder: (draggedId: number, targetIndex: number) => void
+}) {
+  const [dropIndex, setDropIndex] = useState<number | null>(null)
+
+  const handleDragOver = (e: DragEvent, index: number) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (draggedTask?.status === 'in_progress') {
+      e.dataTransfer.dropEffect = 'move'
+      setDropIndex(index)
+    }
+  }
+
+  const handleDrop = (e: DragEvent, index: number) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDropIndex(null)
+    const id = parseInt(e.dataTransfer.getData('text/plain'))
+    if (id && draggedTask?.status === 'in_progress') {
+      onReorder(id, index)
+    }
+  }
+
+  const renderDropZone = (index: number) => {
+    const isActive = dropIndex === index && draggedTask?.status === 'in_progress'
+    return (
+      <div
+        key={`drop-${index}`}
+        className="h-4 relative -my-1"
+        onDragOver={(e) => handleDragOver(e, index)}
+        onDragEnter={(e) => { e.preventDefault(); if (draggedTask?.status === 'in_progress') setDropIndex(index) }}
+        onDragLeave={(e) => { e.stopPropagation() }}
+        onDrop={(e) => handleDrop(e, index)}
+      >
+        <div
+          className={`absolute inset-x-0 top-1/2 -translate-y-1/2 h-6 bg-amber-100 border-2 border-dashed border-amber-400 rounded flex items-center justify-center transition-opacity ${isActive ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+        >
+          <span className="text-xs text-amber-600">Drop here</span>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <h2 className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-3 flex items-center gap-2">
+        <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+        In Progress
+        <span className="text-amber-500/70 font-normal ml-1">({tasks.length})</span>
+      </h2>
+      <div
+        className="flex flex-col mb-12 max-w-[600px] pb-8 relative"
+        onDragLeave={(e) => {
+          const relatedTarget = e.relatedTarget as HTMLElement
+          if (!relatedTarget || !e.currentTarget.contains(relatedTarget)) {
+            setDropIndex(null)
+          }
+        }}
+      >
+        {renderDropZone(0)}
+        {tasks.map((task, idx) => (
+          <div key={task.id}>
+            <InProgressCard
+              task={task}
+              index={idx}
+              totalCount={tasks.length}
+              onDone={onDone}
+              onUpdateTask={onUpdateTask}
+              onDragStart={onDragStart}
+              onDragEnd={onDragEnd}
+            />
+            {renderDropZone(idx + 1)}
+          </div>
+        ))}
+        {/* Gradient fade at bottom to de-emphasize items beyond top 4 */}
+        {tasks.length > 4 && (
+          <div className="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-white to-transparent pointer-events-none" />
+        )}
+      </div>
+    </>
+  )
+}
+
+// In Progress card - prominent display for actively worked items
+// Uses local editing state to avoid conflicts with same task in other sections
+function InProgressCard({ task, index, totalCount, onDone, onUpdateTask, onDragStart, onDragEnd }: {
+  task: Todo
+  index: number
+  totalCount: number
+  onDone: (id: number) => void
+  onUpdateTask: (id: number, updates: { text?: string; status?: string }) => void
+  onDragStart: (e: DragEvent, task: Todo) => void
+  onDragEnd: () => void
+}) {
+  const [hover, setHover] = useState(false)
+  const [isEditing, setIsEditing] = useState(false)
+  const [editText, setEditText] = useState(task.text)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  // Top 4 items get special emphasis
+  const isTopItem = index < 4
+  const emphasis = isTopItem ? 1 - (index * 0.12) : 0.4 // 1.0, 0.88, 0.76, 0.64, then 0.4 for rest
+
+  const handleStartEdit = () => {
+    if (task.id) {
+      setEditText(task.text)
+      setIsEditing(true)
+    }
+  }
+
+  const handleSaveEdit = () => {
+    if (task.id && editText.trim() && editText !== task.text) {
+      onUpdateTask(task.id, { text: editText.trim() })
+    }
+    setIsEditing(false)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleSaveEdit()
+    } else if (e.key === 'Escape') {
+      setEditText(task.text)
+      setIsEditing(false)
+    }
+  }
+
+  useEffect(() => {
+    if (isEditing && inputRef.current) {
+      inputRef.current.focus()
+      inputRef.current.select()
+    }
+  }, [isEditing])
+
+  return (
+    <div
+      className={`rounded-lg shadow-md hover:shadow-lg transition-all group ${
+        isTopItem
+          ? 'bg-gradient-to-br from-amber-50 to-orange-50 border-2 border-amber-400'
+          : 'bg-gradient-to-br from-amber-50/60 to-orange-50/60 border border-amber-200'
+      }`}
+      style={{
+        padding: isTopItem ? '14px 16px' : '10px 14px',
+        opacity: emphasis + 0.3
+      }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      <div className="flex items-center gap-3">
+        {/* Drag handle */}
+        <div
+          className="shrink-0 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity"
+          draggable={!!task.id}
+          onDragStart={(e) => task.id && onDragStart(e, task)}
+          onDragEnd={onDragEnd}
+        >
+          <DragHandle className={`${isTopItem ? 'w-5 h-5' : 'w-4 h-4'} text-amber-400`} />
+        </div>
+        {/* Pulsing status indicator - only for top 4 */}
+        <div className="shrink-0">
+          {isTopItem ? (
+            <span className="relative flex h-4 w-4">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-4 w-4 bg-amber-500"></span>
+            </span>
+          ) : (
+            <span className="inline-flex rounded-full h-3 w-3 bg-amber-300"></span>
+          )}
+        </div>
+        {/* Content - single line, bigger font for top items */}
+        <div className="flex-1 min-w-0">
+          {isEditing ? (
+            <input
+              ref={inputRef}
+              type="text"
+              value={editText}
+              onChange={(e) => setEditText(e.target.value)}
+              onKeyDown={handleKeyDown}
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              className={`w-full font-semibold bg-white border border-amber-400 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-amber-400 ${
+                isTopItem ? 'text-lg' : 'text-base'
+              }`}
+              placeholder="Press Enter to save, Escape to cancel"
+            />
+          ) : (
+            <div
+              className={`font-semibold cursor-text hover:bg-amber-100/50 rounded px-1 -mx-1 truncate ${
+                isTopItem ? 'text-lg text-gray-900' : 'text-base text-gray-700'
+              }`}
+              onClick={handleStartEdit}
+            >
+              {task.text}
+            </div>
+          )}
+        </div>
+        {/* Actions */}
+        <div className="shrink-0 flex items-center gap-2">
+          {hover && task.id && !isEditing && (
+            <>
+              {/* Edit button */}
+              <button
+                onClick={handleStartEdit}
+                className={`rounded flex items-center justify-center text-gray-400 hover:text-amber-600 hover:bg-amber-100 transition-colors ${
+                  isTopItem ? 'w-7 h-7' : 'w-6 h-6'
+                }`}
+                title="Rename"
+              >
+                <svg className={isTopItem ? 'w-4 h-4' : 'w-3.5 h-3.5'} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                </svg>
+              </button>
+              {/* Remove in-progress status */}
+              <button
+                onClick={() => onUpdateTask(task.id!, { status: 'pending' })}
+                className={`rounded flex items-center justify-center bg-amber-200 text-amber-700 hover:bg-amber-300 transition-colors ${
+                  isTopItem ? 'w-7 h-7' : 'w-6 h-6'
+                }`}
+                title="Remove in-progress status"
+              >
+                <svg className={isTopItem ? 'w-5 h-5' : 'w-4 h-4'} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </button>
+              {/* Mark done */}
+              <button
+                onClick={() => onDone(task.id!)}
+                className={`rounded border-2 border-emerald-500 hover:bg-emerald-500 transition-colors ${
+                  isTopItem ? 'w-7 h-7' : 'w-6 h-6'
+                }`}
+                title="Mark as done"
+              />
+            </>
+          )}
+        </div>
       </div>
     </div>
   )
