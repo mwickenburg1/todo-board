@@ -213,6 +213,8 @@ export default function StackView({ onSwitchView }: { onSwitchView: () => void }
               onSectionDragEnd={() => setDraggingSection(null)}
               onSectionDrop={(name, before) => { setDraggingSection(null); actions.reorderSections(name, before) }}
               draggingSection={draggingSection}
+              onAddLink={actions.addLink}
+              onRemoveLink={actions.removeLink}
             />
           </div>
         ))}

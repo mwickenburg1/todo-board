@@ -1,3 +1,20 @@
+export interface TaskLink {
+  type: string      // 'slack_thread' | 'linear' | 'claude_code' | 'url' | ...
+  ref: string       // source-specific reference (channel/ts, issue key, session id, url)
+  label: string     // human-readable label
+  icon: string      // icon key for display
+  added: string     // ISO timestamp
+}
+
+export interface TaskEvent {
+  source: string
+  ref: string
+  summary: string
+  author: string
+  ts: string
+  metadata?: Record<string, unknown>
+}
+
 export interface Todo {
   id: number | null
   text: string
@@ -11,6 +28,8 @@ export interface Todo {
   is_empty_slot?: boolean
   stored_category?: string
   in_progress_order?: number
+  links?: TaskLink[]
+  events?: TaskEvent[]
 }
 
 export interface TodoData {
@@ -37,6 +56,8 @@ export interface StackItem {
   children: StackItem[]
   childCount: number
   original: Todo
+  links: TaskLink[]
+  events: TaskEvent[]
 }
 
 export interface EnvSlotInfo {

@@ -447,6 +447,105 @@ app.post('/api/lists/insert-above', (req, res) => {
   }
 })
 
+// Add a link to a task
+app.post('/api/todos/:id/links', (req, res) => {
+  try {
+    const id = parseInt(req.params.id)
+    const { type, ref, label, icon } = req.body
+    if (!type || !ref) return res.status(400).json({ error: 'type and ref are required' })
+
+    const data = readData()
+    const result = findTask(data, id)
+    if (!result) return res.status(404).json({ error: 'Task not found' })
+    const { task } = result
+
+    if (!task.links) task.links = []
+    // Prevent duplicates by type+ref
+    if (task.links.some(l => l.type === type && l.ref === ref)) {
+      return res.json({ success: true, task, duplicate: true })
+    }
+    const link = { type, ref, label: label || ref, icon: icon || type, added: new Date().toISOString() }
+    task.links.push(link)
+
+    saveData(data)
+    res.json({ success: true, task, link })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Remove a link from a task
+app.delete('/api/todos/:id/links/:idx', (req, res) => {
+  try {
+    const id = parseInt(req.params.id)
+    const idx = parseInt(req.params.idx)
+    const data = readData()
+    const result = findTask(data, id)
+    if (!result) return res.status(404).json({ error: 'Task not found' })
+    const { task } = result
+
+    if (!task.links || idx < 0 || idx >= task.links.length) {
+      return res.status(400).json({ error: 'Invalid link index' })
+    }
+    const removed = task.links.splice(idx, 1)[0]
+    if (task.links.length === 0) delete task.links
+
+    saveData(data)
+    res.json({ success: true, removed })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Ingest an event — routes to tasks that have matching links
+app.post('/api/events', (req, res) => {
+  try {
+    const { source, ref, summary, author, ts, metadata } = req.body
+    if (!source || !ref) return res.status(400).json({ error: 'source and ref are required' })
+
+    const data = readData()
+    const event = {
+      source, ref, summary: summary || '', author: author || '',
+      ts: ts || new Date().toISOString(), metadata
+    }
+
+    // Find all tasks with a matching link
+    let matched = 0
+    for (const tasks of Object.values(data.lists)) {
+      if (!tasks) continue
+      for (const task of tasks) {
+        if (!task.links) continue
+        const hasMatch = task.links.some(l => l.type === source && l.ref === ref)
+        if (hasMatch) {
+          if (!task.events) task.events = []
+          task.events.push(event)
+          // Keep last 50 events per task
+          if (task.events.length > 50) task.events = task.events.slice(-50)
+          matched++
+        }
+      }
+    }
+
+    if (matched > 0) saveData(data)
+    res.json({ success: true, matched })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Get events for a task
+app.get('/api/todos/:id/events', (req, res) => {
+  try {
+    const id = parseInt(req.params.id)
+    const data = readData()
+    const result = findTask(data, id)
+    if (!result) return res.status(404).json({ error: 'Task not found' })
+    res.json({ events: result.task.events || [], links: result.task.links || [] })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // Env status
 app.post('/api/env-status', (req, res) => {
   try {

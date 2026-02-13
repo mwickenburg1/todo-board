@@ -4,7 +4,7 @@ import type { StackItem } from './types'
 import { StackLine, InlineCapture, InsertGap, placeCaretFromClick } from './StackLine'
 import { navigateFrom, consumeArrowNav } from './navigation'
 
-export function StackSection({ name, actionable, waiting, collapsed, onToggle, onCapture, onDone, onUpdate, onToggleStatus, onDragStart, onDragEnd, draggedItem, onDropItem, expandedItems, onToggleExpand, onRename, onCreateStack, onInsertItem, onSplitItem, onInsertAbove, onDeleteTask, onDeleteStack, onSectionDragStart, onSectionDragEnd, onSectionDrop, draggingSection }: {
+export function StackSection({ name, actionable, waiting, collapsed, onToggle, onCapture, onDone, onUpdate, onToggleStatus, onDragStart, onDragEnd, draggedItem, onDropItem, expandedItems, onToggleExpand, onRename, onCreateStack, onInsertItem, onSplitItem, onInsertAbove, onDeleteTask, onDeleteStack, onSectionDragStart, onSectionDragEnd, onSectionDrop, draggingSection, onAddLink, onRemoveLink }: {
   name: string
   actionable: StackItem[]
   waiting: StackItem[]
@@ -31,6 +31,8 @@ export function StackSection({ name, actionable, waiting, collapsed, onToggle, o
   onSectionDragEnd?: () => void
   onSectionDrop?: (name: string, beforeName?: string) => void
   draggingSection?: string | null
+  onAddLink?: (id: number, link: { type: string, ref: string, label?: string }) => void
+  onRemoveLink?: (id: number, idx: number) => void
 }) {
   const [editingName, setEditingName] = useState(false)
   const [nameText, setNameText] = useState(name)
@@ -143,6 +145,8 @@ export function StackSection({ name, actionable, waiting, collapsed, onToggle, o
                   onDragStart={onDragStart}
                   onDragEnd={onDragEnd}
                   onDelete={onDeleteTask}
+                  onAddLink={onAddLink}
+                  onRemoveLink={onRemoveLink}
                   navCol={column}
                   navSection={name}
                   navIdx={idx}
@@ -172,6 +176,8 @@ export function StackSection({ name, actionable, waiting, collapsed, onToggle, o
                 onDragStart={onDragStart}
                 onDragEnd={onDragEnd}
                 onDelete={onDeleteTask}
+                onAddLink={onAddLink}
+                onRemoveLink={onRemoveLink}
                 isChild
               />
             ))}

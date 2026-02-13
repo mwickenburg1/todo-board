@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, memo } from 'react'
 import type { DragEvent as ReactDragEvent } from 'react'
-import type { StackItem } from './types'
+import type { StackItem, TaskLink } from './types'
 import { consumeArrowNav, consumePendingFocus, navigateFrom, setArrowNav } from './navigation'
 
 const envColors: Record<string, string> = {
@@ -36,6 +36,94 @@ function highlightTags(text: string) {
   })
 }
 
+// Link type icons — small inline SVGs for each source type
+const linkIcons: Record<string, { svg: string, color: string, label: string }> = {
+  slack_thread: { svg: 'S', color: 'text-purple-500 bg-purple-50', label: 'Slack' },
+  slack: { svg: 'S', color: 'text-purple-500 bg-purple-50', label: 'Slack' },
+  linear: { svg: 'L', color: 'text-blue-600 bg-blue-50', label: 'Linear' },
+  claude_code: { svg: 'C', color: 'text-orange-500 bg-orange-50', label: 'Claude' },
+  github: { svg: 'G', color: 'text-gray-700 bg-gray-100', label: 'GitHub' },
+  url: { svg: '\\u2197', color: 'text-gray-500 bg-gray-50', label: 'Link' },
+}
+
+function LinkBadges({ links, onRemove }: { links: TaskLink[], onRemove?: (idx: number) => void }) {
+  if (!links || links.length === 0) return null
+  return (
+    <span className="inline-flex items-center gap-0.5 shrink-0">
+      {links.map((link, i) => {
+        const info = linkIcons[link.type] || linkIcons[link.icon] || linkIcons.url
+        return (
+          <span
+            key={i}
+            className={`inline-flex items-center justify-center w-4 h-4 rounded text-[9px] font-bold ${info.color} cursor-default`}
+            title={`${info.label}: ${link.label}`}
+            onClick={(e) => {
+              if (e.shiftKey && onRemove) { e.stopPropagation(); onRemove(i) }
+            }}
+          >
+            {info.svg}
+          </span>
+        )
+      })}
+    </span>
+  )
+}
+
+function LinkPopover({ onAdd, onClose }: {
+  onAdd: (link: { type: string, ref: string, label?: string }) => void
+  onClose: () => void
+}) {
+  const [input, setInput] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => { inputRef.current?.focus() }, [])
+
+  const handleSubmit = () => {
+    const trimmed = input.trim()
+    if (!trimmed) { onClose(); return }
+
+    // Auto-detect link type from input
+    let type = 'url', ref = trimmed, label = trimmed
+    if (/slack/i.test(trimmed) || trimmed.match(/^[A-Z]\w+\/[\d.]+$/)) {
+      type = 'slack_thread'; label = trimmed
+    } else if (/^[A-Z]+-\d+$/i.test(trimmed)) {
+      type = 'linear'; label = trimmed
+    } else if (/claude/i.test(trimmed) || /^session[-_]/i.test(trimmed)) {
+      type = 'claude_code'; label = trimmed
+    } else if (/github\.com/i.test(trimmed)) {
+      type = 'github'
+      label = trimmed.replace(/https?:\/\/github\.com\//, '')
+    } else if (/^https?:\/\//.test(trimmed)) {
+      try { label = new URL(trimmed).hostname } catch { label = trimmed }
+    }
+
+    onAdd({ type, ref, label })
+    setInput('')
+    onClose()
+  }
+
+  return (
+    <div className="absolute right-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-lg shadow-lg p-2 w-64"
+      onClick={e => e.stopPropagation()}>
+      <input
+        ref={inputRef}
+        value={input}
+        onChange={e => setInput(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Enter') handleSubmit()
+          if (e.key === 'Escape') onClose()
+        }}
+        onBlur={() => { if (!input.trim()) onClose() }}
+        placeholder="Paste link, issue key, or URL..."
+        className="w-full text-xs bg-gray-50 border border-gray-200 rounded px-2 py-1.5 outline-none focus:border-blue-300"
+      />
+      <div className="text-[10px] text-gray-400 mt-1 px-1">
+        ATT-123 &middot; slack thread &middot; URL &middot; session-id
+      </div>
+    </div>
+  )
+}
+
 // Place cursor at approximate click position by measuring text widths
 export function placeCaretFromClick(input: HTMLInputElement, clientX: number) {
   const style = getComputedStyle(input)
@@ -56,7 +144,7 @@ export function placeCaretFromClick(input: HTMLInputElement, clientX: number) {
 // Re-export navigation utilities used by other components
 export { navigateFrom, setArrowNav, setPendingFocus } from './navigation'
 
-export const StackLine = memo(function StackLine({ item, onDone, onUpdate, onToggleStatus, onDragStart, onDragEnd, isChild, onEnterSplit, onDelete, navCol, navSection, navIdx }: {
+export const StackLine = memo(function StackLine({ item, onDone, onUpdate, onToggleStatus, onDragStart, onDragEnd, isChild, onEnterSplit, onDelete, onAddLink, onRemoveLink, navCol, navSection, navIdx }: {
   item: StackItem
   onDone: (id: number, recursive?: boolean) => void
   onUpdate: (id: number, updates: { text?: string }) => void
@@ -66,6 +154,8 @@ export const StackLine = memo(function StackLine({ item, onDone, onUpdate, onTog
   isChild?: boolean
   onEnterSplit?: (id: number, textBefore: string, textAfter: string) => void
   onDelete?: (id: number) => void
+  onAddLink?: (id: number, link: { type: string, ref: string, label?: string }) => void
+  onRemoveLink?: (id: number, idx: number) => void
   navCol?: 'actionable' | 'waiting'
   navSection?: string
   navIdx?: number
@@ -74,6 +164,7 @@ export const StackLine = memo(function StackLine({ item, onDone, onUpdate, onTog
   const [editing, setEditing] = useState(false)
   const [editText, setEditText] = useState(item.text)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [showLinkPopover, setShowLinkPopover] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const rowRef = useRef<HTMLDivElement>(null)
   const clickXRef = useRef<number | null>(null)
@@ -244,6 +335,14 @@ export const StackLine = memo(function StackLine({ item, onDone, onUpdate, onTog
       {item.childCount > 0 && (
         <span className="text-[10px] text-gray-400">{item.childCount}</span>
       )}
+      {item.links.length > 0 && (
+        <LinkBadges links={item.links} onRemove={onRemoveLink ? (idx) => onRemoveLink(item.id!, idx) : undefined} />
+      )}
+      {item.events.length > 0 && (
+        <span className="text-[9px] text-gray-400 bg-gray-50 rounded px-1" title={`${item.events.length} event${item.events.length > 1 ? 's' : ''}`}>
+          {item.events.length}
+        </span>
+      )}
       {item.linkedEnv && (
         <span className={`text-[10px] font-medium ${envColors[item.linkedEnv] || 'text-gray-400'}`}>
           {item.linkedEnv}
@@ -253,15 +352,32 @@ export const StackLine = memo(function StackLine({ item, onDone, onUpdate, onTog
         <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
       )}
 
-      {/* Toggle status on hover */}
+      {/* Hover actions */}
       {hover && item.id && !editing && (
-        <button
-          onClick={() => onToggleStatus(item.id!, item.status)}
-          className="text-[10px] text-gray-400 hover:text-amber-500 transition-colors shrink-0"
-          title={item.status === 'in_progress' ? 'Unblock' : 'Block'}
-        >
-          {item.status === 'in_progress' ? '\u2192' : '\u23F8'}
-        </button>
+        <div className="relative inline-flex items-center gap-1 shrink-0">
+          <button
+            onClick={() => onToggleStatus(item.id!, item.status)}
+            className="text-[10px] text-gray-400 hover:text-amber-500 transition-colors"
+            title={item.status === 'in_progress' ? 'Unblock' : 'Block'}
+          >
+            {item.status === 'in_progress' ? '\u2192' : '\u23F8'}
+          </button>
+          {onAddLink && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setShowLinkPopover(!showLinkPopover) }}
+              className="text-[10px] text-gray-400 hover:text-blue-500 transition-colors"
+              title="Link to external source"
+            >
+              &#x1F517;
+            </button>
+          )}
+          {showLinkPopover && onAddLink && (
+            <LinkPopover
+              onAdd={(link) => onAddLink(item.id!, link)}
+              onClose={() => setShowLinkPopover(false)}
+            />
+          )}
+        </div>
       )}
     </div>
   )

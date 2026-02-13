@@ -107,8 +107,19 @@ export function useTaskActions(fetchData: () => void) {
     fetchData()
   }, [fetchData])
 
+  const addLink = useCallback(async (id: number, link: { type: string, ref: string, label?: string, icon?: string }) => {
+    await post(`/api/todos/${id}/links`, link)
+    fetchData()
+  }, [fetchData])
+
+  const removeLink = useCallback(async (id: number, idx: number) => {
+    await fetch(`/api/todos/${id}/links/${idx}`, { method: 'DELETE' })
+    fetchData()
+  }, [fetchData])
+
   return {
     capture, markDone, updateTask, toggleStatus, dropItem, deleteTask,
-    createStack, renameStack, deleteStack, insertItem, splitItem, reorderSections, insertAboveSection
+    createStack, renameStack, deleteStack, insertItem, splitItem, reorderSections, insertAboveSection,
+    addLink, removeLink
   }
 }

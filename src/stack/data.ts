@@ -63,8 +63,10 @@ export function processForStack(data: TodoData) {
         children: subtasks.map(s => ({
           id: s.id, text: s.text, status: s.status, sourceList: 'today',
           children: [], childCount: 0, original: s,
+          links: s.links || [], events: s.events || [],
         })),
         childCount: subtasks.length, original: item,
+        links: item.links || [], events: item.events || [],
       })
     }
   }
@@ -91,8 +93,10 @@ export function processForStack(data: TodoData) {
         children: childItems.map(c => ({
           id: c.id, text: c.text, status: c.status, sourceList: listName,
           children: [], childCount: 0, original: c,
+          links: c.links || [], events: c.events || [],
         })),
         childCount: item.childCount || childItems.length, original: item,
+        links: item.links || [], events: item.events || [],
       })
     }
   }
@@ -108,6 +112,7 @@ export function processForStack(data: TodoData) {
         id: item.id, text: item.text, status: item.status,
         waitingReason: 'monitoring', sourceList: 'monitoring',
         children: [], childCount: 0, original: item,
+        links: item.links || [], events: item.events || [],
       })
     }
   }
@@ -115,6 +120,7 @@ export function processForStack(data: TodoData) {
   const doneItems: StackItem[] = (data.lists.done || []).map(item => ({
     id: item.id, text: item.text, status: item.status, sourceList: 'done',
     children: [], childCount: 0, original: item,
+    links: item.links || [], events: item.events || [],
   }))
 
   // Env slots
