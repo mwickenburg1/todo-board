@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import type { DragEvent as ReactDragEvent } from 'react'
 import type { TodoData, StackItem, EnvStatusRemote } from './stack/types'
 import { processForStack } from './stack/data'
@@ -6,6 +6,68 @@ import { DocumentLine } from './stack/StackLine'
 import { StackSection } from './stack/StackSection'
 import { EnvStatusBar } from './stack/EnvStatusBar'
 import { useTaskActions } from './stack/useTaskActions'
+
+function RootGap({ active, onActivate, onDeactivate, onCreateStack, onCapture }: {
+  active: boolean
+  onActivate: () => void
+  onDeactivate: () => void
+  onCreateStack: (name: string) => void
+  onCapture: (text: string) => void
+}) {
+  const [text, setText] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+  const isToggle = text.startsWith('>')
+
+  useEffect(() => {
+    if (active && inputRef.current) inputRef.current.focus()
+  }, [active])
+
+  const handleSubmit = () => {
+    const trimmed = text.trim()
+    if (!trimmed) { onDeactivate(); return }
+
+    if (trimmed.startsWith('>')) {
+      const name = trimmed.slice(1).trim()
+      if (name) onCreateStack(name)
+    } else {
+      onCapture(trimmed)
+    }
+    setText('')
+    onDeactivate()
+  }
+
+  if (!active) {
+    return (
+      <div
+        className="h-6 -mt-6 cursor-text relative z-10"
+        onClick={onActivate}
+      />
+    )
+  }
+
+  return (
+    <div className="-mt-4 mb-2">
+      <input
+        ref={inputRef}
+        type="text"
+        value={text}
+        data-dirty={text ? 'true' : undefined}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => { if (!text.trim()) { setText(''); onDeactivate() } }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') handleSubmit()
+          if (e.key === 'Escape') { setText(''); onDeactivate() }
+        }}
+        placeholder="Type to add task, or > to create section..."
+        className={`w-full bg-transparent border-none outline-none py-[3px] px-1 placeholder:text-gray-300 transition-all ${
+          isToggle
+            ? 'text-lg font-semibold text-gray-800'
+            : 'text-[13px] text-gray-700'
+        }`}
+      />
+    </div>
+  )
+}
 
 export default function StackView({ onSwitchView }: { onSwitchView: () => void }) {
   const [data, setData] = useState<TodoData | null>(null)
@@ -15,6 +77,7 @@ export default function StackView({ onSwitchView }: { onSwitchView: () => void }
   const [expandedItems, setExpandedItems] = useState<Set<number>>(new Set())
   const [draggedItem, setDraggedItem] = useState<StackItem | null>(null)
   const [draggingSection, setDraggingSection] = useState<string | null>(null)
+  const [activeRootGap, setActiveRootGap] = useState<number | null>(null)
 
   const fetchData = useCallback(() => {
     fetch('/api/todos')
@@ -99,41 +162,44 @@ export default function StackView({ onSwitchView }: { onSwitchView: () => void }
       {/* Stacks */}
       <div className="max-w-5xl mx-auto px-8">
         {stackNames.map((name, i) => (
-          <StackSection
-            key={name}
-            name={name}
-            actionable={stacks[name]?.actionable || []}
-            waiting={stacks[name]?.waiting || []}
-            collapsed={collapsedStacks.has(name)}
-            onToggle={() => toggleStack(name)}
-            onCapture={(text, column) => actions.capture(text, name, column)}
-            onDone={actions.markDone}
-            onUpdate={actions.updateTask}
-            onToggleStatus={actions.toggleStatus}
-            onDragStart={handleDragStart}
-            onDragEnd={handleDragEnd}
-            draggedItem={draggedItem}
-            onDropItem={actions.dropItem}
-            expandedItems={expandedItems}
-            onToggleExpand={toggleExpand}
-            onRename={actions.renameStack}
-            onCreateStack={actions.createStack}
-            onInsertItem={actions.insertItem}
-            onSplitItem={actions.splitItem}
-            onInsertAbove={() => {
-              if (i > 0) {
-                actions.insertItem(stackNames[i - 1], 'actionable', '')
-              } else {
-                actions.insertAboveSection(name)
-              }
-            }}
-            onDeleteTask={actions.deleteTask}
-            onDeleteStack={actions.deleteStack}
-            onSectionDragStart={setDraggingSection}
-            onSectionDragEnd={() => setDraggingSection(null)}
-            onSectionDrop={(name, before) => { setDraggingSection(null); actions.reorderSections(name, before) }}
-            draggingSection={draggingSection}
-          />
+          <div key={name}>
+            {/* Root-level gap before each section */}
+            <RootGap
+              active={activeRootGap === i}
+              onActivate={() => setActiveRootGap(i)}
+              onDeactivate={() => setActiveRootGap(null)}
+              onCreateStack={(sectionName) => actions.createStack(sectionName, name)}
+              onCapture={(text) => actions.capture(text, name, 'actionable')}
+            />
+            <StackSection
+              name={name}
+              actionable={stacks[name]?.actionable || []}
+              waiting={stacks[name]?.waiting || []}
+              collapsed={collapsedStacks.has(name)}
+              onToggle={() => toggleStack(name)}
+              onCapture={(text, column) => actions.capture(text, name, column)}
+              onDone={actions.markDone}
+              onUpdate={actions.updateTask}
+              onToggleStatus={actions.toggleStatus}
+              onDragStart={handleDragStart}
+              onDragEnd={handleDragEnd}
+              draggedItem={draggedItem}
+              onDropItem={actions.dropItem}
+              expandedItems={expandedItems}
+              onToggleExpand={toggleExpand}
+              onRename={actions.renameStack}
+              onCreateStack={(sectionName) => actions.createStack(sectionName, name)}
+              onInsertItem={actions.insertItem}
+              onSplitItem={actions.splitItem}
+              onInsertAbove={() => setActiveRootGap(i)}
+              onDeleteTask={actions.deleteTask}
+              onDeleteStack={actions.deleteStack}
+              onSectionDragStart={setDraggingSection}
+              onSectionDragEnd={() => setDraggingSection(null)}
+              onSectionDrop={(name, before) => { setDraggingSection(null); actions.reorderSections(name, before) }}
+              draggingSection={draggingSection}
+            />
+          </div>
         ))}
 
         <DocumentLine

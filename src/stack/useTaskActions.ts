@@ -53,9 +53,9 @@ export function useTaskActions(fetchData: () => void) {
     fetchData()
   }, [fetchData])
 
-  const createStack = useCallback(async (name: string) => {
+  const createStack = useCallback(async (name: string, beforeSection?: string) => {
     const normalized = name.toLowerCase().replace(/\s+/g, '-')
-    await post('/api/lists', { name: normalized })
+    await post('/api/lists', { name: normalized, beforeSection })
     fetchData()
   }, [fetchData])
 

@@ -320,14 +320,25 @@ app.post('/api/todos/:id/reorder', (req, res) => {
   }
 })
 
-// Create an empty list
+// Create an empty list (optionally positioned before another section)
 app.post('/api/lists', (req, res) => {
   try {
-    const { name } = req.body
+    const { name, beforeSection } = req.body
     if (!name) return res.status(400).json({ error: 'name is required' })
 
     const data = readData()
     if (!data.lists[name]) data.lists[name] = []
+
+    if (beforeSection && data.lists[beforeSection]) {
+      const entries = Object.entries(data.lists)
+      const newIdx = entries.findIndex(([k]) => k === name)
+      const [entry] = entries.splice(newIdx, 1)
+      const beforeIdx = entries.findIndex(([k]) => k === beforeSection)
+      if (beforeIdx !== -1) entries.splice(beforeIdx, 0, entry)
+      else entries.push(entry)
+      data.lists = Object.fromEntries(entries)
+    }
+
     saveData(data)
     res.json({ success: true, name })
   } catch (err) {
