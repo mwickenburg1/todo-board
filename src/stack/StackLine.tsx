@@ -268,7 +268,7 @@ export const StackLine = memo(function StackLine({ item, onDone, onUpdate, onTog
     >
       {/* Drag handle — positioned in the left margin */}
       <span
-        className="absolute -left-5 top-0 bottom-0 w-5 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-40 transition-opacity select-none text-xs text-gray-400 inline-flex items-center justify-center"
+        className="absolute -left-5 top-0 bottom-0 w-5 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-40 transition-opacity select-none text-gray-400 inline-flex items-center justify-center"
         draggable={!!item.id}
         onDragStart={(e) => {
           if (!item.id) return
@@ -279,7 +279,11 @@ export const StackLine = memo(function StackLine({ item, onDone, onUpdate, onTog
         }}
         onDragEnd={onDragEnd}
       >
-        &#x2807;
+        <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor">
+          <circle cx="3" cy="3" r="1.5"/><circle cx="7" cy="3" r="1.5"/>
+          <circle cx="3" cy="8" r="1.5"/><circle cx="7" cy="8" r="1.5"/>
+          <circle cx="3" cy="13" r="1.5"/><circle cx="7" cy="13" r="1.5"/>
+        </svg>
       </span>
 
       {/* Checkbox - always visible */}
