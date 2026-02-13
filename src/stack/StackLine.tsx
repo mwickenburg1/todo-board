@@ -381,54 +381,56 @@ export const StackLine = memo(function StackLine({ item, onDone, onUpdate, onTog
         </span>
       )}
 
-      {/* Annotations */}
-      {item.childCount > 0 && (
-        <span className="text-[10px] text-gray-400">{item.childCount}</span>
-      )}
-      {item.links.length > 0 && (
-        <LinkBadges links={item.links} onRemove={onRemoveLink ? (idx) => onRemoveLink(item.id!, idx) : undefined} />
-      )}
-      {item.events.length > 0 && (
-        <span className="text-[9px] text-gray-400 bg-gray-50 rounded px-1" title={`${item.events.length} event${item.events.length > 1 ? 's' : ''}`}>
-          {item.events.length}
-        </span>
-      )}
-      {item.linkedEnv && (
-        <span className={`text-[10px] font-medium ${envColors[item.linkedEnv] || 'text-gray-400'}`}>
-          {item.linkedEnv}
-        </span>
-      )}
-      {item.waitingReason === 'in_progress' && !item.linkedEnv && (
-        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
-      )}
+      {/* Right-side annotations — fixed layout, no shift on hover */}
+      <span className="inline-flex items-center gap-1 shrink-0 ml-auto">
+        {item.childCount > 0 && (
+          <span className="text-[10px] text-gray-400">{item.childCount}</span>
+        )}
+        {item.links.length > 0 && (
+          <LinkBadges links={item.links} onRemove={onRemoveLink ? (idx) => onRemoveLink(item.id!, idx) : undefined} />
+        )}
+        {item.events.length > 0 && (
+          <span className="text-[9px] text-gray-400 bg-gray-50 rounded px-1" title={`${item.events.length} event${item.events.length > 1 ? 's' : ''}`}>
+            {item.events.length}
+          </span>
+        )}
+        {item.linkedEnv && (
+          <span className={`text-[10px] font-medium ${envColors[item.linkedEnv] || 'text-gray-400'}`}>
+            {item.linkedEnv}
+          </span>
+        )}
+        {item.waitingReason === 'in_progress' && !item.linkedEnv && (
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+        )}
 
-      {/* Hover actions */}
-      {hover && item.id && !editing && (
-        <div className="relative inline-flex items-center gap-1 shrink-0">
-          <button
-            onClick={() => onToggleStatus(item.id!, item.status)}
-            className="text-[10px] text-gray-400 hover:text-amber-500 transition-colors"
-            title={item.status === 'in_progress' ? 'Unblock' : 'Block'}
-          >
-            {item.status === 'in_progress' ? '\u2192' : '\u23F8'}
-          </button>
-          {onAddLink && (
+        {/* Hover actions — always in DOM, opacity-controlled */}
+        {item.id && !editing && (
+          <span className={`relative inline-flex items-center gap-1 transition-opacity ${hover ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
             <button
-              onClick={(e) => { e.stopPropagation(); setShowLinkPopover(!showLinkPopover) }}
-              className="text-[10px] text-gray-400 hover:text-blue-500 transition-colors"
-              title="Link to external source"
+              onClick={() => onToggleStatus(item.id!, item.status)}
+              className="text-[10px] text-gray-400 hover:text-amber-500 transition-colors"
+              title={item.status === 'in_progress' ? 'Unblock' : 'Block'}
             >
-              &#x1F517;
+              {item.status === 'in_progress' ? '\u2192' : '\u23F8'}
             </button>
-          )}
-          {showLinkPopover && onAddLink && (
-            <LinkPopover
-              onAdd={(link) => onAddLink(item.id!, link)}
-              onClose={() => setShowLinkPopover(false)}
-            />
-          )}
-        </div>
-      )}
+            {onAddLink && (
+              <button
+                onClick={(e) => { e.stopPropagation(); setShowLinkPopover(!showLinkPopover) }}
+                className="text-[10px] text-gray-400 hover:text-blue-500 transition-colors"
+                title="Link to external source"
+              >
+                &#x1F517;
+              </button>
+            )}
+            {showLinkPopover && onAddLink && (
+              <LinkPopover
+                onAdd={(link) => onAddLink(item.id!, link)}
+                onClose={() => setShowLinkPopover(false)}
+              />
+            )}
+          </span>
+        )}
+      </span>
     </div>
   )
 })
