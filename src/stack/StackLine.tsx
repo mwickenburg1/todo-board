@@ -134,12 +134,23 @@ function LinkPopover({ onAdd, onClose }: {
 
     // Auto-detect link type from input
     let type = 'url', ref = trimmed, label = trimmed
-    if (/slack/i.test(trimmed) || trimmed.match(/^[A-Z]\w+\/[\d.]+$/)) {
-      type = 'slack_thread'; label = trimmed
+
+    // Slack message URL: https://workspace.slack.com/archives/C0ABC123/p1234567890123456
+    const slackUrlMatch = trimmed.match(/slack\.com\/archives\/([A-Z0-9]+)\/p(\d+)/i)
+    if (slackUrlMatch) {
+      type = 'slack_thread'
+      const channel = slackUrlMatch[1]
+      const rawTs = slackUrlMatch[2]
+      // Slack p-timestamps: pXXXXXXXXXXYYYYYY → XXXXXXXXXX.YYYYYY
+      ref = `${channel}/${rawTs.slice(0, 10)}.${rawTs.slice(10)}`
+      label = `#${channel} thread`
+    } else if (trimmed.match(/^[A-Z]\w+\/[\d.]+$/)) {
+      // Direct channel/ts format: C0ABC123/1234567890.123456
+      type = 'slack_thread'
     } else if (/^[A-Z]+-\d+$/i.test(trimmed)) {
-      type = 'linear'; label = trimmed
+      type = 'linear'
     } else if (/claude/i.test(trimmed) || /^session[-_]/i.test(trimmed)) {
-      type = 'claude_code'; label = trimmed
+      type = 'claude_code'
     } else if (/github\.com/i.test(trimmed)) {
       type = 'github'
       label = trimmed.replace(/https?:\/\/github\.com\//, '')

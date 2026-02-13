@@ -103,37 +103,107 @@ class EventHub {
   }
 }
 
-// --- Slack Socket Mode Plugin ---
+// --- Slack Polling Plugin ---
+// Polls conversations.replies for watched threads using a user token.
+// Link ref format: "C0ABC123/1234567890.123456" (channel/thread_ts)
+// Only needs SLACK_USER_TOKEN (xoxp-... or xoxb-...), no app token needed.
 
 function createSlackPlugin() {
   const token = process.env.SLACK_USER_TOKEN
-  const appToken = process.env.SLACK_APP_TOKEN
 
-  if (!token || !appToken) {
-    console.log('[slack] Missing SLACK_USER_TOKEN or SLACK_APP_TOKEN, skipping')
+  if (!token) {
+    console.log('[slack] Missing SLACK_USER_TOKEN, skipping')
     return null
   }
 
   let dispatch = null
   let watchRefs = new Set()
+  let pollTimer = null
+  // Track last-seen message ts per thread to only dispatch new messages
+  const lastSeen = {}
+
+  async function slackAPI(method, params = {}) {
+    const url = new URL(`https://slack.com/api/${method}`)
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+    return res.json()
+  }
+
+  async function pollThread(ref) {
+    // ref format: "CHANNEL_ID/THREAD_TS"
+    const [channel, thread_ts] = ref.split('/')
+    if (!channel || !thread_ts) return
+
+    try {
+      const params = { channel, ts: thread_ts, limit: '10' }
+      // Only fetch messages newer than our last seen
+      if (lastSeen[ref]) params.oldest = lastSeen[ref]
+
+      const result = await slackAPI('conversations.replies', params)
+      if (!result.ok) {
+        if (result.error !== 'thread_not_found') {
+          console.error(`[slack] API error for ${ref}: ${result.error}`)
+        }
+        return
+      }
+
+      const messages = result.messages || []
+      // Skip the parent message (first in thread) and any we've already seen
+      const newMessages = messages.filter(m => {
+        if (m.ts === thread_ts) return false // skip parent
+        if (lastSeen[ref] && m.ts <= lastSeen[ref]) return false
+        return true
+      })
+
+      for (const msg of newMessages) {
+        await dispatch(ref, {
+          summary: (msg.text || '').slice(0, 200),
+          author: msg.user || 'unknown',
+          ts: new Date(parseFloat(msg.ts) * 1000).toISOString(),
+          metadata: { channel, thread_ts, message_ts: msg.ts, subtype: msg.subtype }
+        })
+      }
+
+      // Update last seen to the latest message ts
+      if (messages.length > 0) {
+        lastSeen[ref] = messages[messages.length - 1].ts
+      }
+    } catch (err) {
+      console.error(`[slack] Poll error for ${ref}:`, err.message)
+    }
+  }
+
+  async function pollAll() {
+    if (watchRefs.size === 0) return
+    for (const ref of watchRefs) {
+      await pollThread(ref)
+      // Small delay between API calls to respect rate limits
+      await new Promise(r => setTimeout(r, 500))
+    }
+  }
 
   return {
     type: 'slack_thread',
 
     async start(dispatchFn) {
       dispatch = dispatchFn
-      // Socket Mode requires @slack/socket-mode — start polling as fallback
-      console.log('[slack] Plugin ready (will poll watched threads)')
+      console.log(`[slack] Plugin ready (polling every 30s, token: ${token.slice(0, 8)}...)`)
+      // Poll every 30 seconds
+      pollTimer = setInterval(pollAll, 30000)
     },
 
     updateWatchList(refs) {
+      const prev = watchRefs.size
       watchRefs = new Set(refs)
-      if (watchRefs.size > 0) {
+      if (watchRefs.size !== prev) {
         console.log(`[slack] Watching ${watchRefs.size} thread(s)`)
       }
+      // Immediately poll new threads
+      if (watchRefs.size > prev) pollAll()
     },
 
     async stop() {
+      if (pollTimer) clearInterval(pollTimer)
       console.log('[slack] Stopped')
     }
   }
