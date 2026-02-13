@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, memo } from 'react'
 import type { DragEvent as ReactDragEvent } from 'react'
-import type { StackItem, TaskLink } from './types'
+import type { StackItem, TaskLink, TaskEvent } from './types'
 import { consumeArrowNav, consumePendingFocus, navigateFrom, setArrowNav } from './navigation'
 
 const envColors: Record<string, string> = {
@@ -113,11 +113,17 @@ function linkUrl(link: TaskLink): string | null {
   return null
 }
 
-function LinkBadges({ links, onRemove }: { links: TaskLink[], onRemove?: (idx: number) => void }) {
+function TypeBadge({ type, typeLinks, allLinks, onRemove }: {
+  type: string
+  typeLinks: TaskLink[]
+  allLinks: TaskLink[]
+  onRemove?: (idx: number) => void
+}) {
   const [showPopover, setShowPopover] = useState(false)
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  if (!links || links.length === 0) return null
+  const info = linkLogos[type] || linkLogos.url
+  const Icon = info.icon
 
   const handleEnter = () => {
     if (hideTimer.current) clearTimeout(hideTimer.current)
@@ -127,30 +133,16 @@ function LinkBadges({ links, onRemove }: { links: TaskLink[], onRemove?: (idx: n
     hideTimer.current = setTimeout(() => setShowPopover(false), 200)
   }
 
-  // Deduplicate logo icons — show one per type
-  const types = new Map<string, TaskLink>()
-  for (const link of links) {
-    if (!types.has(link.type)) types.set(link.type, link)
-  }
-
   return (
     <span
-      className="relative inline-flex items-center gap-1 shrink-0"
+      className="relative inline-flex items-center justify-center w-4 h-4 cursor-default opacity-70 hover:opacity-100 transition-opacity"
       onMouseEnter={handleEnter}
       onMouseLeave={handleLeave}
     >
-      {[...types.values()].map((link, i) => {
-        const info = linkLogos[link.type] || linkLogos[link.icon] || linkLogos.url
-        const Icon = info.icon
-        return (
-          <span
-            key={i}
-            className="inline-flex items-center justify-center w-4 h-4 cursor-default opacity-70 hover:opacity-100 transition-opacity"
-          >
-            <Icon size={14} />
-          </span>
-        )
-      })}
+      <Icon size={14} />
+      {typeLinks.length > 1 && (
+        <span className="absolute -top-1 -right-1 text-[8px] text-gray-400 font-medium leading-none">{typeLinks.length}</span>
+      )}
       {showPopover && (
         <div
           className="absolute right-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[200px] max-w-[320px]"
@@ -158,16 +150,16 @@ function LinkBadges({ links, onRemove }: { links: TaskLink[], onRemove?: (idx: n
           onMouseLeave={handleLeave}
           onClick={e => e.stopPropagation()}
         >
-          {links.map((link, i) => {
-            const info = linkLogos[link.type] || linkLogos[link.icon] || linkLogos.url
-            const Icon = info.icon
+          {typeLinks.map((link) => {
+            const LinkIcon = (linkLogos[link.type] || linkLogos.url).icon
             const url = linkUrl(link)
+            const globalIdx = allLinks.indexOf(link)
             return (
               <div
-                key={i}
+                key={globalIdx}
                 className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 group/link"
               >
-                <span className="shrink-0 opacity-70"><Icon size={12} /></span>
+                <span className="shrink-0 opacity-70"><LinkIcon size={12} /></span>
                 {url ? (
                   <a
                     href={url}
@@ -182,7 +174,7 @@ function LinkBadges({ links, onRemove }: { links: TaskLink[], onRemove?: (idx: n
                 )}
                 {onRemove && (
                   <button
-                    onClick={(e) => { e.stopPropagation(); onRemove(i) }}
+                    onClick={(e) => { e.stopPropagation(); onRemove(globalIdx) }}
                     className="text-[10px] text-gray-300 hover:text-red-400 opacity-0 group-hover/link:opacity-100 transition-opacity shrink-0"
                     title="Remove link"
                   >
@@ -192,6 +184,100 @@ function LinkBadges({ links, onRemove }: { links: TaskLink[], onRemove?: (idx: n
               </div>
             )
           })}
+        </div>
+      )}
+    </span>
+  )
+}
+
+function LinkBadges({ links, onRemove }: { links: TaskLink[], onRemove?: (idx: number) => void }) {
+  if (!links || links.length === 0) return null
+
+  // Group links by type
+  const byType = new Map<string, TaskLink[]>()
+  for (const link of links) {
+    const existing = byType.get(link.type) || []
+    existing.push(link)
+    byType.set(link.type, existing)
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1 shrink-0">
+      {[...byType.entries()].map(([type, typeLinks]) => (
+        <TypeBadge key={type} type={type} typeLinks={typeLinks} allLinks={links} onRemove={onRemove} />
+      ))}
+    </span>
+  )
+}
+
+function timeAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime()
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return `${hrs}h`
+  const days = Math.floor(hrs / 24)
+  return `${days}d`
+}
+
+function EventBadge({ events }: { events: TaskEvent[] }) {
+  const [showPopover, setShowPopover] = useState(false)
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  if (!events || events.length === 0) return null
+
+  const handleEnter = () => {
+    if (hideTimer.current) clearTimeout(hideTimer.current)
+    setShowPopover(true)
+  }
+  const handleLeave = () => {
+    hideTimer.current = setTimeout(() => setShowPopover(false), 200)
+  }
+
+  // Show most recent events first, limit to 10
+  const recent = [...events].reverse().slice(0, 10)
+
+  return (
+    <span
+      className="relative inline-flex items-center cursor-default"
+      onMouseEnter={handleEnter}
+      onMouseLeave={handleLeave}
+    >
+      <span className="text-[9px] text-gray-400 bg-gray-50 rounded px-1">
+        {events.length}
+      </span>
+      {showPopover && (
+        <div
+          className="absolute right-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[240px] max-w-[360px]"
+          onMouseEnter={handleEnter}
+          onMouseLeave={handleLeave}
+          onClick={e => e.stopPropagation()}
+        >
+          <div className="px-3 py-1 text-[10px] text-gray-400 font-medium uppercase tracking-wider border-b border-gray-100">
+            Recent activity
+          </div>
+          {recent.map((ev, i) => (
+            <div key={i} className="px-3 py-1.5 hover:bg-gray-50">
+              <div className="flex items-center gap-1.5">
+                {linkLogos[ev.source] && (
+                  <span className="shrink-0 opacity-60">
+                    {linkLogos[ev.source].icon({ size: 10 })}
+                  </span>
+                )}
+                <span className="text-[11px] text-gray-500 truncate">{ev.author}</span>
+                <span className="text-[10px] text-gray-300 ml-auto shrink-0">{timeAgo(ev.ts)}</span>
+              </div>
+              {ev.summary && (
+                <div className="text-xs text-gray-600 mt-0.5 line-clamp-2 leading-snug">{ev.summary}</div>
+              )}
+            </div>
+          ))}
+          {events.length > 10 && (
+            <div className="px-3 py-1 text-[10px] text-gray-300 text-center border-t border-gray-100">
+              +{events.length - 10} older
+            </div>
+          )}
         </div>
       )}
     </span>
@@ -484,9 +570,7 @@ export const StackLine = memo(function StackLine({ item, onDone, onUpdate, onTog
           <LinkBadges links={item.links} onRemove={onRemoveLink ? (idx) => onRemoveLink(item.id!, idx) : undefined} />
         )}
         {item.events.length > 0 && (
-          <span className="text-[9px] text-gray-400 bg-gray-50 rounded px-1" title={`${item.events.length} event${item.events.length > 1 ? 's' : ''}`}>
-            {item.events.length}
-          </span>
+          <EventBadge events={item.events} />
         )}
         {item.linkedEnv && (
           <span className={`text-[10px] font-medium ${envColors[item.linkedEnv] || 'text-gray-400'}`}>

@@ -508,26 +508,71 @@ app.post('/api/events', (req, res) => {
       source, ref, summary: summary || '', author: author || '',
       ts: ts || new Date().toISOString(), metadata
     }
+    const isLabelOnly = metadata?.is_root === true
 
-    // Find all tasks with a matching link
+    // Collect tasks to move (can't mutate arrays during iteration)
+    const moves = []
     let matched = 0
-    for (const tasks of Object.values(data.lists)) {
+    let bumped = 0
+
+    for (const [listName, tasks] of Object.entries(data.lists)) {
       if (!tasks) continue
       for (const task of tasks) {
         if (!task.links) continue
-        const hasMatch = task.links.some(l => l.type === source && l.ref === ref)
-        if (hasMatch) {
-          if (!task.events) task.events = []
-          task.events.push(event)
-          // Keep last 50 events per task
-          if (task.events.length > 50) task.events = task.events.slice(-50)
-          matched++
+        const matchingLink = task.links.find(l => l.type === source && l.ref === ref)
+        if (!matchingLink) continue
+
+        // Update link label with latest activity
+        if (event.summary) {
+          matchingLink.label = event.author
+            ? `${event.author}: ${event.summary}`.slice(0, 100)
+            : event.summary.slice(0, 100)
         }
+
+        // Bump to actionable: waiting → actionable within the same section, at the top
+        // monitoring items move to today list; in_progress items flip to pending in place
+        if (listName === 'monitoring') {
+          moves.push({ task, fromList: listName })
+        } else if (task.status === 'in_progress') {
+          task.status = 'pending'
+          // Move to front of list so it appears at top of actionable
+          const arr = data.lists[listName]
+          const idx = arr.indexOf(task)
+          if (idx > 0) { arr.splice(idx, 1); arr.unshift(task) }
+          bumped++
+          console.log(`[events] Bumped "${task.text}" to top of actionable in ${listName}`)
+        }
+
+        // Root messages only update the label, don't store as event
+        if (isLabelOnly) {
+          matched++
+          continue
+        }
+
+        // Store event (with dedup)
+        if (!task.events) task.events = []
+        const isDupe = task.events.some(e => e.source === event.source && e.ts === event.ts)
+        if (isDupe) continue
+        task.events.push(event)
+        if (task.events.length > 50) task.events = task.events.slice(-50)
+        matched++
       }
     }
 
-    if (matched > 0) saveData(data)
-    res.json({ success: true, matched })
+    // Apply monitoring → today moves after iteration
+    for (const { task, fromList } of moves) {
+      const fromArr = data.lists[fromList]
+      const idx = fromArr.indexOf(task)
+      if (idx !== -1) fromArr.splice(idx, 1)
+      if (!data.lists.today) data.lists.today = []
+      task.status = 'pending'
+      data.lists.today.unshift(task)
+      bumped++
+      console.log(`[events] Moved "${task.text}" from monitoring → today/actionable`)
+    }
+
+    if (matched > 0 || bumped > 0) saveData(data)
+    res.json({ success: true, matched, bumped })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

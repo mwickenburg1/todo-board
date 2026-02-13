@@ -13,6 +13,25 @@
  *   TODO_API_URL      — Base URL for the todo API (default: http://localhost:5181)
  */
 
+import { readFileSync } from 'fs'
+import { resolve, dirname } from 'path'
+import { fileURLToPath } from 'url'
+
+// Load .env from project root
+const __dirname = dirname(fileURLToPath(import.meta.url))
+try {
+  const envFile = readFileSync(resolve(__dirname, '..', '.env'), 'utf8')
+  for (const line of envFile.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const eq = trimmed.indexOf('=')
+    if (eq === -1) continue
+    const key = trimmed.slice(0, eq)
+    const val = trimmed.slice(eq + 1)
+    if (!process.env[key]) process.env[key] = val
+  }
+} catch {}
+
 const TODO_API = process.env.TODO_API_URL || 'http://localhost:5181'
 
 // --- Plugin interface ---
@@ -120,6 +139,8 @@ function createSlackPlugin() {
   let pollTimer = null
   // Track last-seen message ts per thread to only dispatch new messages
   const lastSeen = {}
+  // Cache resolved Slack user IDs → display names
+  const userNames = {}
 
   async function slackAPI(method, params = {}) {
     const url = new URL(`https://slack.com/api/${method}`)
@@ -128,9 +149,28 @@ function createSlackPlugin() {
     return res.json()
   }
 
+  async function resolveUser(userId) {
+    if (!userId || userId === 'unknown') return userId
+    if (userNames[userId]) return userNames[userId]
+    try {
+      const result = await slackAPI('users.info', { user: userId })
+      if (result.ok) {
+        const name = result.user.profile?.display_name || result.user.real_name || userId
+        userNames[userId] = name
+        console.log(`[slack] Resolved ${userId} → ${name}`)
+        return name
+      }
+      console.log(`[slack] users.info failed for ${userId}: ${result.error}`)
+    } catch (err) {
+      console.error(`[slack] users.info error for ${userId}:`, err.message)
+    }
+    return userId
+  }
+
   async function pollThread(ref) {
     const [channel, thread_ts] = ref.split('/')
     if (!channel || !thread_ts) return
+    const isFirstPoll = !lastSeen[ref]
 
     try {
       const params = { channel, ts: thread_ts, limit: '10' }
@@ -145,6 +185,25 @@ function createSlackPlugin() {
       }
 
       const messages = result.messages || []
+
+      // On first poll: only set thread label from root message, skip historical replies
+      if (isFirstPoll) {
+        if (messages.length > 0) {
+          // Use last reply as label (most recent activity), fall back to root
+          const latest = messages[messages.length - 1]
+          const authorName = await resolveUser(latest.user)
+          await dispatch(ref, {
+            summary: (latest.text || '').slice(0, 200),
+            author: authorName,
+            ts: new Date(parseFloat(latest.ts) * 1000).toISOString(),
+            metadata: { channel, thread_ts, message_ts: latest.ts, is_root: true }
+          })
+          // Initialize lastSeen so subsequent polls only get new messages
+          lastSeen[ref] = messages[messages.length - 1].ts
+        }
+        return
+      }
+
       const newMessages = messages.filter(m => {
         if (m.ts === thread_ts) return false
         if (lastSeen[ref] && m.ts <= lastSeen[ref]) return false
@@ -152,9 +211,10 @@ function createSlackPlugin() {
       })
 
       for (const msg of newMessages) {
+        const authorName = await resolveUser(msg.user)
         await dispatch(ref, {
           summary: (msg.text || '').slice(0, 200),
-          author: msg.user || 'unknown',
+          author: authorName,
           ts: new Date(parseFloat(msg.ts) * 1000).toISOString(),
           metadata: { channel, thread_ts, message_ts: msg.ts, subtype: msg.subtype }
         })

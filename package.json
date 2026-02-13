@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "server": "node server/index.js",
+    "hub": "node --env-file=.env server/event-hub.js",
     "start": "npm run server & npm run dev",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
