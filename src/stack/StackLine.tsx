@@ -95,26 +95,105 @@ const linkLogos: Record<string, { icon: (props: { size?: number }) => JSX.Elemen
   },
 }
 
+function linkUrl(link: TaskLink): string | null {
+  if (link.type === 'url' || link.type === 'github') {
+    return /^https?:\/\//.test(link.ref) ? link.ref : null
+  }
+  if (link.type === 'linear') {
+    return `https://linear.app/issue/${link.ref}`
+  }
+  if (link.type === 'slack_thread' || link.type === 'slack') {
+    // ref format: CHANNEL/TS → can't construct web URL without workspace, but try deep link
+    const [channel, ts] = link.ref.split('/')
+    if (channel && ts) {
+      const pTs = ts.replace('.', '')
+      return `https://slack.com/app_redirect?channel=${channel}&message_ts=${ts}`
+    }
+  }
+  return null
+}
+
 function LinkBadges({ links, onRemove }: { links: TaskLink[], onRemove?: (idx: number) => void }) {
+  const [showPopover, setShowPopover] = useState(false)
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   if (!links || links.length === 0) return null
+
+  const handleEnter = () => {
+    if (hideTimer.current) clearTimeout(hideTimer.current)
+    setShowPopover(true)
+  }
+  const handleLeave = () => {
+    hideTimer.current = setTimeout(() => setShowPopover(false), 200)
+  }
+
+  // Deduplicate logo icons — show one per type
+  const types = new Map<string, TaskLink>()
+  for (const link of links) {
+    if (!types.has(link.type)) types.set(link.type, link)
+  }
+
   return (
-    <span className="inline-flex items-center gap-1 shrink-0">
-      {links.map((link, i) => {
+    <span
+      className="relative inline-flex items-center gap-1 shrink-0"
+      onMouseEnter={handleEnter}
+      onMouseLeave={handleLeave}
+    >
+      {[...types.values()].map((link, i) => {
         const info = linkLogos[link.type] || linkLogos[link.icon] || linkLogos.url
         const Icon = info.icon
         return (
           <span
             key={i}
             className="inline-flex items-center justify-center w-4 h-4 cursor-default opacity-70 hover:opacity-100 transition-opacity"
-            title={`${info.label}: ${link.label}`}
-            onClick={(e) => {
-              if (e.shiftKey && onRemove) { e.stopPropagation(); onRemove(i) }
-            }}
           >
             <Icon size={14} />
           </span>
         )
       })}
+      {showPopover && (
+        <div
+          className="absolute right-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[200px] max-w-[320px]"
+          onMouseEnter={handleEnter}
+          onMouseLeave={handleLeave}
+          onClick={e => e.stopPropagation()}
+        >
+          {links.map((link, i) => {
+            const info = linkLogos[link.type] || linkLogos[link.icon] || linkLogos.url
+            const Icon = info.icon
+            const url = linkUrl(link)
+            return (
+              <div
+                key={i}
+                className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 group/link"
+              >
+                <span className="shrink-0 opacity-70"><Icon size={12} /></span>
+                {url ? (
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 text-xs text-gray-700 hover:text-blue-600 truncate"
+                  >
+                    {link.label || link.ref}
+                  </a>
+                ) : (
+                  <span className="flex-1 text-xs text-gray-600 truncate">{link.label || link.ref}</span>
+                )}
+                {onRemove && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onRemove(i) }}
+                    className="text-[10px] text-gray-300 hover:text-red-400 opacity-0 group-hover/link:opacity-100 transition-opacity shrink-0"
+                    title="Remove link"
+                  >
+                    &#x2715;
+                  </button>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
     </span>
   )
 }
