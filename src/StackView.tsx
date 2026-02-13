@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import type { DragEvent as ReactDragEvent } from 'react'
 import type { TodoData, StackItem, EnvStatusRemote } from './stack/types'
 import { processForStack } from './stack/data'
@@ -79,14 +79,27 @@ export default function StackView({ onSwitchView }: { onSwitchView: () => void }
   const [draggingSection, setDraggingSection] = useState<string | null>(null)
   const [activeRootGap, setActiveRootGap] = useState<number | null>(null)
 
+  const lastJsonRef = useRef('')
+  const lastEnvJsonRef = useRef('')
+
   const fetchData = useCallback(() => {
     fetch('/api/todos')
-      .then(res => res.json())
-      .then(setData)
+      .then(res => res.text())
+      .then(text => {
+        if (text !== lastJsonRef.current) {
+          lastJsonRef.current = text
+          setData(JSON.parse(text))
+        }
+      })
       .catch(err => setError(err.message))
     fetch('/api/env-status')
-      .then(res => res.json())
-      .then(setEnvStatusRemote)
+      .then(res => res.text())
+      .then(text => {
+        if (text !== lastEnvJsonRef.current) {
+          lastEnvJsonRef.current = text
+          setEnvStatusRemote(JSON.parse(text))
+        }
+      })
       .catch(() => {})
   }, [])
 
@@ -139,10 +152,12 @@ export default function StackView({ onSwitchView }: { onSwitchView: () => void }
     })
   }, [])
 
-  if (error) return <div className="p-8 text-red-500 text-sm">Error: {error}</div>
-  if (!data) return <div className="p-8 text-gray-400 text-sm">Loading...</div>
+  const processed = useMemo(() => data ? processForStack(data) : null, [data])
 
-  const { stacks, stackNames, doneItems, envSlots } = processForStack(data)
+  if (error) return <div className="p-8 text-red-500 text-sm">Error: {error}</div>
+  if (!data || !processed) return <div className="p-8 text-gray-400 text-sm">Loading...</div>
+
+  const { stacks, stackNames, doneItems, envSlots } = processed
 
   return (
     <div className="min-h-screen bg-white pb-16">

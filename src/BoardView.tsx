@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import type { DragEvent } from 'react'
 import type { Todo, TodoData } from './board/types'
 import { processList, sortByStatus, filterByCategory } from './board/types'
@@ -13,10 +13,17 @@ export default function BoardView({ onSwitchView }: { onSwitchView: () => void }
   const [expandedTasks, setExpandedTasks] = useState<Set<number>>(new Set())
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set(['today', 'tomorrow', 'backlog', 'done']))
 
+  const lastJsonRef = useRef('')
+
   const fetchData = useCallback(() => {
     fetch('/api/todos')
-      .then(res => res.json())
-      .then(setData)
+      .then(res => res.text())
+      .then(text => {
+        if (text !== lastJsonRef.current) {
+          lastJsonRef.current = text
+          setData(JSON.parse(text))
+        }
+      })
       .catch(err => setError(err.message))
   }, [])
 

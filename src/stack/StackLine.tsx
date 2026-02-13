@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, memo } from 'react'
 import type { DragEvent as ReactDragEvent } from 'react'
 import type { StackItem } from './types'
 import { consumeArrowNav, consumePendingFocus, navigateFrom, setArrowNav } from './navigation'
@@ -56,7 +56,7 @@ export function placeCaretFromClick(input: HTMLInputElement, clientX: number) {
 // Re-export navigation utilities used by other components
 export { navigateFrom, setArrowNav, setPendingFocus } from './navigation'
 
-export function StackLine({ item, onDone, onUpdate, onToggleStatus, onDragStart, onDragEnd, isChild, onEnterSplit, onDelete, navCol, navSection, navIdx }: {
+export const StackLine = memo(function StackLine({ item, onDone, onUpdate, onToggleStatus, onDragStart, onDragEnd, isChild, onEnterSplit, onDelete, navCol, navSection, navIdx }: {
   item: StackItem
   onDone: (id: number, recursive?: boolean) => void
   onUpdate: (id: number, updates: { text?: string }) => void
@@ -265,7 +265,7 @@ export function StackLine({ item, onDone, onUpdate, onToggleStatus, onDragStart,
       )}
     </div>
   )
-}
+})
 
 // Inline capture — supports both plain text (add task) and > syntax (create section)
 export function InlineCapture({ onCapture, onCreateStack, navCol, navSection }: {
