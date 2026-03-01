@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import type { DragEvent as ReactDragEvent } from 'react'
 import type { Todo, TodoData, StackItem, EnvStatusRemote } from './stack/types'
-import { processForStack, PINNED_LISTS } from './stack/data'
+import { processForStack, PINNED_LISTS, PINNED_LABELS } from './stack/data'
 import { DocumentLine } from './stack/InlineCapture'
 import { StackSection } from './stack/StackSection'
 import { EnvStatusBar } from './stack/EnvStatusBar'
@@ -9,6 +9,48 @@ import { useTaskActions } from './stack/useTaskActions'
 import { useOptimisticActions } from './stack/useOptimisticActions'
 import { PulseBanner } from './stack/PulseBanner'
 import { RootGap } from './stack/RootGap'
+
+function EscalationStrip({ item, level, onDeescalate, onDone }: {
+  item: StackItem
+  level: number
+  onDeescalate: () => void
+  onDone: () => void
+}) {
+  const isDouble = level === 2
+  return (
+    <div className={`flex items-center gap-3 px-4 py-2.5 rounded-lg mb-2 ${
+      isDouble
+        ? 'bg-red-50 border border-red-300/60'
+        : 'bg-amber-50 border border-amber-300/60'
+    }`}>
+      <button
+        onClick={onDeescalate}
+        className={`text-xs font-bold shrink-0 px-1.5 py-0.5 rounded cursor-pointer select-none ${
+          isDouble
+            ? 'text-red-500 hover:bg-red-100'
+            : 'text-amber-500 hover:bg-amber-100'
+        }`}
+        title="De-escalate"
+      >
+        {isDouble ? '!!' : '!'}
+      </button>
+      <span className={`flex-1 text-sm font-medium truncate ${
+        isDouble ? 'text-red-800' : 'text-amber-800'
+      }`}>
+        {item.text}
+      </span>
+      <button
+        onClick={onDone}
+        className={`w-4 h-4 shrink-0 rounded-sm border transition-colors ${
+          isDouble
+            ? 'border-red-400 hover:bg-red-100'
+            : 'border-amber-400 hover:bg-amber-100'
+        }`}
+        title="Done"
+      />
+    </div>
+  )
+}
 
 export default function StackView() {
   const [data, setData] = useState<TodoData | null>(null)
@@ -20,6 +62,8 @@ export default function StackView() {
   const [draggingSection, setDraggingSection] = useState<string | null>(null)
   const [activeRootGap, setActiveRootGap] = useState<number | null>(null)
   const [gapSpacers, setGapSpacers] = useState<Record<number, number>>({})
+  const [focusedSection, setFocusedSection] = useState<string | null>(null)
+  const [dark, setDark] = useState(() => localStorage.getItem('dark-mode') === 'true')
 
   const lastJsonRef = useRef('')
   const lastEnvJsonRef = useRef('')
@@ -98,13 +142,75 @@ export default function StackView() {
     })
   }, [])
 
+  const toggleEscalation = useCallback((id: number, currentLevel: number, targetLevel: number) => {
+    const newLevel = currentLevel === targetLevel ? 0 : targetLevel
+    setData(prev => {
+      if (!prev) return prev
+      const newLists = { ...prev.lists }
+      // Clear others at this level
+      if (newLevel > 0) {
+        for (const [listName, items] of Object.entries(newLists)) {
+          if (!items) continue
+          newLists[listName] = items.map(t =>
+            t.escalation === newLevel && t.id !== id ? { ...t, escalation: 0 } : t
+          )
+        }
+      }
+      // Set this item
+      for (const [listName, items] of Object.entries(newLists)) {
+        if (!items) continue
+        const idx = items.findIndex(t => t.id === id)
+        if (idx !== -1) {
+          const newItems = [...items]
+          newItems[idx] = { ...newItems[idx], escalation: newLevel }
+          newLists[listName] = newItems
+          break
+        }
+      }
+      return { ...prev, lists: newLists }
+    })
+    fetch(`/api/todos/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ escalation: newLevel }),
+    }).then(() => fetchData()).catch(() => {})
+  }, [fetchData, setData])
+
   const processed = useMemo(() => data ? processForStack(data) : null, [data])
+
+  // Sync dark class on mount (must be before early returns)
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', dark)
+  }, [])
 
   if (error) return <div className="p-8 text-red-500 text-sm">Error: {error}</div>
   if (!data || !processed) return <div className="p-8 text-gray-400 text-sm">Loading...</div>
 
   const { stacks, stackNames, doneItems, envSlots } = processed
   const pulseItems = (data.lists.pulse || []).filter(t => t.id && t.status !== 'done')
+
+  // Cap Today: CC-linked items always show, max 4 others
+  const MAX_MANUAL_TODAY = 4
+  const capItems = (items: StackItem[]) => {
+    const ccLinked: StackItem[] = []
+    const manual: StackItem[] = []
+    for (const item of items) {
+      if (item.links.some(l => l.type === 'claude_code')) ccLinked.push(item)
+      else manual.push(item)
+    }
+    return [...ccLinked, ...manual.slice(0, MAX_MANUAL_TODAY)]
+  }
+
+  // Find escalated items across all stacks
+  const escalatedItems: { item: StackItem; level: number }[] = []
+  for (const [, stack] of Object.entries(stacks)) {
+    for (const item of [...stack.actionable, ...stack.waiting]) {
+      if (item.escalation && item.escalation > 0) {
+        escalatedItems.push({ item, level: item.escalation })
+      }
+    }
+  }
+  escalatedItems.sort((a, b) => b.level - a.level)
 
   const dismissPulse = async (id: number) => {
     setData(prev => {
@@ -114,20 +220,40 @@ export default function StackView() {
     try { await fetch(`/api/todos/${id}`, { method: 'DELETE' }) } catch {}
   }
 
+  const toggleDark = () => {
+    setDark(d => {
+      const next = !d
+      localStorage.setItem('dark-mode', String(next))
+      document.documentElement.classList.toggle('dark', next)
+      return next
+    })
+  }
+
   return (
     <div className="min-h-screen bg-white pb-16">
       <div className="max-w-6xl mx-auto px-8 pt-8">
+        {/* Dark mode toggle */}
+        <div className="flex justify-end mb-2">
+          <button
+            onClick={toggleDark}
+            className="text-gray-400 hover:text-gray-600 transition-colors text-sm px-2 py-1 rounded hover:bg-gray-100"
+            title={dark ? 'Light mode' : 'Dark mode'}
+          >
+            {dark ? '\u2600' : '\u263E'}
+          </button>
+        </div>
+
         <PulseBanner items={pulseItems} onDismiss={dismissPulse} />
 
-        {/* Pinned sections */}
+        {/* Pinned "Today" section with escalation strips between header and columns */}
         {PINNED_LISTS.filter(name => stacks[name]).map(name => (
           <StackSection
             key={name}
             name={name}
-            label={data.section_labels?.[name] || 'Daily Goals'}
+            label={data.section_labels?.[name] || PINNED_LABELS[name] || name}
             pinned
-            actionable={stacks[name]?.actionable || []}
-            waiting={stacks[name]?.waiting || []}
+            actionable={capItems(stacks[name]?.actionable || [])}
+            waiting={capItems(stacks[name]?.waiting || [])}
             collapsed={collapsedStacks.has(name)}
             onToggle={() => toggleStack(name)}
             onCapture={(text, column) => optimistic.capture(text, name, column)}
@@ -147,11 +273,37 @@ export default function StackView() {
             onAddLink={actions.addLink}
             onRemoveLink={actions.removeLink}
             onMoveItem={(id, column, direction) => optimistic.moveItem(id, name, column, direction)}
+            onEscalate={toggleEscalation}
+            headerExtra={escalatedItems.length > 0 ? (
+              <div className="mb-4">
+                {escalatedItems.map(({ item, level }) => (
+                  <EscalationStrip
+                    key={item.id}
+                    item={item}
+                    level={level}
+                    onDeescalate={() => item.id && toggleEscalation(item.id, level, level)}
+                    onDone={() => item.id && actions.markDone(item.id)}
+                  />
+                ))}
+              </div>
+            ) : null}
           />
         ))}
 
+        {/* 100px gap after Today */}
+        <div style={{ height: 100 }} />
+
         {stackNames.map((name, i) => (
-          <div key={name}>
+          <div
+            key={name}
+            className={`transition-opacity duration-200 ${
+              focusedSection === name ? 'opacity-100' : 'opacity-30'
+            }`}
+            onFocusCapture={() => setFocusedSection(name)}
+            onBlurCapture={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node)) setFocusedSection(null)
+            }}
+          >
             <RootGap
               active={activeRootGap === i}
               onActivate={() => setActiveRootGap(i)}
@@ -165,6 +317,7 @@ export default function StackView() {
               name={name}
               label={data.section_labels?.[name]}
               isFirstSection={i === 0}
+              subdued
               actionable={stacks[name]?.actionable || []}
               waiting={stacks[name]?.waiting || []}
               collapsed={collapsedStacks.has(name)}
@@ -194,6 +347,7 @@ export default function StackView() {
               onAddLink={actions.addLink}
               onRemoveLink={actions.removeLink}
               onMoveItem={(id, column, direction) => optimistic.moveItem(id, name, column, direction)}
+              onEscalate={toggleEscalation}
             />
           </div>
         ))}
@@ -203,23 +357,23 @@ export default function StackView() {
           onActivate={() => setActiveRootGap(stackNames.length)}
           onDeactivate={() => setActiveRootGap(null)}
           onCreateStack={(sectionName) => optimistic.createStack(sectionName)}
-          onCapture={(text) => optimistic.capture(text, stackNames[stackNames.length - 1] || 'today', 'actionable')}
+          onCapture={(text) => optimistic.capture(text, stackNames[stackNames.length - 1] || 'queue', 'actionable')}
           spacers={gapSpacers[stackNames.length] || 0}
           onSetSpacers={(n) => setGapSpacers(prev => ({ ...prev, [stackNames.length]: n }))}
         />
 
         <DocumentLine
           onCreateStack={optimistic.createStack}
-          onCapture={(text) => optimistic.capture(text, stackNames[0] || 'today', 'actionable')}
+          onCapture={(text) => optimistic.capture(text, stackNames[0] || 'queue', 'actionable')}
         />
 
         {/* Done - collapsed by default */}
-        <div className="mb-8">
+        <div className="mb-8 opacity-50">
           <div className="flex items-center gap-2 mb-2">
             <button onClick={() => toggleStack('done')} className="text-gray-400 hover:text-gray-600 transition-colors">
               <span className={`text-xs inline-block transition-transform ${collapsedStacks.has('done') ? '' : 'rotate-90'}`}>&#9654;</span>
             </button>
-            <h2 className="text-lg font-semibold text-gray-400">Done</h2>
+            <h2 className="text-sm font-medium text-gray-400">Done</h2>
           </div>
           {!collapsedStacks.has('done') && (
             <div className="pl-5 max-h-[300px] overflow-y-auto">

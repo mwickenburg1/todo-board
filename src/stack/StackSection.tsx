@@ -5,11 +5,12 @@ import { StackLine, placeCaretFromClick } from './StackLine'
 import { InlineCapture, InsertGap } from './InlineCapture'
 import { navigateFrom, consumeArrowNav } from './navigation'
 
-export function StackSection({ name, label, isFirstSection, pinned, actionable, waiting, collapsed, onToggle, onCapture, onDone, onUpdate, onToggleStatus, onDragStart, onDragEnd, draggedItem, onDropItem, expandedItems, onToggleExpand, onRename, onCreateStack, onInsertItem, onSplitItem, onInsertAbove, onInsertBelow, onDeleteTask, onDeleteStack, onSectionDragStart, onSectionDragEnd, onSectionDrop, draggingSection, onAddLink, onRemoveLink, onMoveItem }: {
+export function StackSection({ name, label, isFirstSection, pinned, subdued, actionable, waiting, collapsed, onToggle, onCapture, onDone, onUpdate, onToggleStatus, onDragStart, onDragEnd, draggedItem, onDropItem, expandedItems, onToggleExpand, onRename, onCreateStack, onInsertItem, onSplitItem, onInsertAbove, onInsertBelow, onDeleteTask, onDeleteStack, onSectionDragStart, onSectionDragEnd, onSectionDrop, draggingSection, onAddLink, onRemoveLink, onMoveItem, onEscalate, headerExtra }: {
   name: string
   label?: string
   isFirstSection?: boolean
   pinned?: boolean
+  subdued?: boolean
   actionable: StackItem[]
   waiting: StackItem[]
   collapsed: boolean
@@ -39,6 +40,8 @@ export function StackSection({ name, label, isFirstSection, pinned, actionable, 
   onAddLink?: (id: number, link: { type: string, ref: string, label?: string }) => void
   onRemoveLink?: (id: number, idx: number) => void
   onMoveItem?: (id: number, column: 'actionable' | 'waiting', direction: 'up' | 'down') => void
+  onEscalate?: (id: number, currentLevel: number, targetLevel: number) => void
+  headerExtra?: React.ReactNode
 }) {
   const displayName = label || name.replace(/-/g, ' ')
   const [editingName, setEditingName] = useState(false)
@@ -154,6 +157,7 @@ export function StackSection({ name, label, isFirstSection, pinned, actionable, 
                   onAddLink={onAddLink}
                   onRemoveLink={onRemoveLink}
                   onMoveItem={onMoveItem ? (id, direction) => onMoveItem(id, column, direction) : undefined}
+                  onEscalate={onEscalate}
                   navCol={column}
                   navSection={name}
                   navIdx={idx}
@@ -311,10 +315,10 @@ export function StackSection({ name, label, isFirstSection, pinned, actionable, 
                 if (headerRef.current) navigateFrom(headerRef.current, 'up')
               }
             }}
-            className="flex-1 text-lg font-semibold text-gray-800 bg-transparent outline-none"
+            className="flex-1 font-semibold bg-transparent outline-none text-lg text-gray-800"
           />
         ) : (
-          <h2 className="flex-1 text-lg font-semibold text-gray-800 cursor-text">
+          <h2 className="flex-1 font-semibold cursor-text text-lg text-gray-800">
             {displayName}
           </h2>
         )}
@@ -334,6 +338,8 @@ export function StackSection({ name, label, isFirstSection, pinned, actionable, 
           </span>
         )}
       </div>
+
+      {headerExtra}
 
       {!collapsed && (
         <div className="flex gap-8 pl-5">
