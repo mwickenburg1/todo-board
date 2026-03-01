@@ -16,6 +16,14 @@ export function consumePendingFocus(id: number): boolean {
   return false
 }
 
+// Auto-focus a section's first actionable capture after creation
+let _pendingSectionFocus: string | null = null
+export function setPendingSectionFocus(section: string) { _pendingSectionFocus = section }
+export function consumePendingSectionFocus(section: string): boolean {
+  if (section && section === _pendingSectionFocus) { _pendingSectionFocus = null; return true }
+  return false
+}
+
 // 4-direction navigation using data-nav-* attributes
 export function navigateFrom(currentEl: HTMLElement, direction: 'up' | 'down' | 'left' | 'right') {
   const section = currentEl.closest<HTMLElement>('[data-nav-section]')?.dataset.navSection
@@ -35,13 +43,23 @@ export function navigateFrom(currentEl: HTMLElement, direction: 'up' | 'down' | 
   } else if (direction === 'down') {
     navigateDown(allNav, sections, sectionIdx, section, col, idx, rawIdx)
   } else if (direction === 'left' && col === 'waiting') {
-    const items = allNav.filter(el => el.dataset.navSection === section && el.dataset.navCol === 'actionable')
-    const target = items[Math.min(idx, items.length - 1)]
-    if (target) clickNav(target)
+    if (rawIdx === 'capture') {
+      const capture = allNav.find(el => el.dataset.navSection === section && el.dataset.navCol === 'actionable' && el.dataset.navIdx === 'capture')
+      if (capture) clickNav(capture)
+    } else {
+      const items = allNav.filter(el => el.dataset.navSection === section && el.dataset.navCol === 'actionable')
+      const target = items[Math.min(idx, items.length - 1)]
+      if (target) clickNav(target)
+    }
   } else if (direction === 'right' && col === 'actionable') {
-    const items = allNav.filter(el => el.dataset.navSection === section && el.dataset.navCol === 'waiting')
-    const target = items[Math.min(idx, items.length - 1)]
-    if (target) clickNav(target)
+    if (rawIdx === 'capture') {
+      const capture = allNav.find(el => el.dataset.navSection === section && el.dataset.navCol === 'waiting' && el.dataset.navIdx === 'capture')
+      if (capture) clickNav(capture)
+    } else {
+      const items = allNav.filter(el => el.dataset.navSection === section && el.dataset.navCol === 'waiting')
+      const target = items[Math.min(idx, items.length - 1)]
+      if (target) clickNav(target)
+    }
   }
 }
 
@@ -74,7 +92,13 @@ function navigateUp(allNav: HTMLElement[], sections: string[], sectionIdx: numbe
 function navigateDown(allNav: HTMLElement[], sections: string[], sectionIdx: number, section: string, col: string | undefined, idx: number, rawIdx: string) {
   if (col === 'header') {
     const target = allNav.find(el => el.dataset.navSection === section && el.dataset.navCol === 'actionable' && el.dataset.navIdx === '0')
-    if (target) clickNav(target)
+    if (target) {
+      clickNav(target)
+    } else {
+      // Empty section — focus the actionable capture input
+      const capture = allNav.find(el => el.dataset.navSection === section && el.dataset.navCol === 'actionable' && el.dataset.navIdx === 'capture')
+      if (capture) clickNav(capture)
+    }
   } else if (rawIdx === 'capture') {
     // From capture: go to next section's header
     if (sectionIdx < sections.length - 1) {
@@ -100,7 +124,7 @@ function navigateDown(allNav: HTMLElement[], sections: string[], sectionIdx: num
   }
 }
 
-function clickNav(el: HTMLElement) {
+export function clickNav(el: HTMLElement) {
   _arrowNav = true
   if (el.dataset.navCol === 'header') {
     const h2 = el.querySelector<HTMLElement>('h2.cursor-text')

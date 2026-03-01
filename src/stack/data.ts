@@ -1,7 +1,25 @@
 import type { Todo, TodoData, StackItem, EnvSlotInfo } from './types'
+import { statusToColumn } from '../shared/helpers'
 
 // Lists that are handled specially (not shown as toggle sections)
-const HIDDEN_LISTS = ['now', 'monitoring', 'done']
+const HIDDEN_LISTS = ['now', 'monitoring', 'done', 'pulse']
+
+// Pinned lists: rendered at fixed positions, not in the normal section flow
+export const PINNED_LISTS = ['daily-goals']
+
+// Extract env names from claude_code link labels (format: "claude (env4): ...")
+// and from focus_slot
+function extractEnvs(item: Todo): Set<string> {
+  const envs = new Set<string>()
+  if (item.focus_slot) envs.add(item.focus_slot)
+  for (const link of (item.links || [])) {
+    if (link.type === 'claude_code' && link.label) {
+      const m = link.label.match(/^claude \((env\d+)\)/)
+      if (m) envs.add(m[1])
+    }
+  }
+  return envs
+}
 
 export function processList(list: Todo[]): (Todo & { category?: string; childCount?: number })[] {
   const tree = list.filter(t => !t.parent_id).map(parent => ({
@@ -28,7 +46,7 @@ export function getStackNames(data: TodoData): string[] {
 
   const names: string[] = []
   for (const key of Object.keys(data.lists)) {
-    if (HIDDEN_LISTS.includes(key)) continue
+    if (HIDDEN_LISTS.includes(key) || PINNED_LISTS.includes(key)) continue
     names.push(key)
   }
   return names
@@ -53,16 +71,23 @@ export function processForStack(data: TodoData) {
     stacks[name] = { actionable: [], waiting: [] }
   }
 
+  // Also initialize pinned lists
+  for (const name of PINNED_LISTS) {
+    if (data.lists[name]) {
+      stacks[name] = { actionable: [], waiting: [] }
+    }
+  }
+
   // Process "now" items → today/waiting
   if (stacks.today) {
     for (const item of nowItems) {
       const subtasks = (data.lists.today || []).filter(t => t.parent_id === item.id)
       stacks.today.waiting.push({
         id: item.id, text: item.text, status: item.status,
-        linkedEnv: item.focus_slot, waitingReason: 'env', sourceList: 'now',
+        envs: extractEnvs(item), waitingReason: 'env', sourceList: 'now',
         children: subtasks.map(s => ({
           id: s.id, text: s.text, status: s.status, sourceList: 'today',
-          children: [], childCount: 0, original: s,
+          children: [], childCount: 0, original: s, envs: extractEnvs(s),
           links: s.links || [], events: s.events || [],
         })),
         childCount: subtasks.length, original: item,
@@ -82,17 +107,18 @@ export function processForStack(data: TodoData) {
 
     for (const item of processed) {
       if (item.parent_id && nowItems.some(n => n.id === item.parent_id)) continue
-      const column = item.status === 'in_progress' ? 'waiting' : 'actionable'
+      const column = statusToColumn(item.status)
       const childItems = filtered.filter(t => t.parent_id === item.id && t.status !== 'done')
 
       stacks[listName][column].push({
         id: item.id, text: item.text, status: item.status,
         groupName: (item as Todo & { category?: string }).category || undefined,
+        envs: extractEnvs(item),
         waitingReason: item.status === 'in_progress' ? 'in_progress' : undefined,
         sourceList: listName,
         children: childItems.map(c => ({
           id: c.id, text: c.text, status: c.status, sourceList: listName,
-          children: [], childCount: 0, original: c,
+          children: [], childCount: 0, original: c, envs: extractEnvs(c),
           links: c.links || [], events: c.events || [],
         })),
         childCount: item.childCount || childItems.length, original: item,
@@ -105,12 +131,17 @@ export function processForStack(data: TodoData) {
     processStackList(name)
   }
 
+  // Process pinned lists
+  for (const name of PINNED_LISTS) {
+    processStackList(name)
+  }
+
   // Monitoring → today/waiting
   if (stacks.today) {
     for (const item of (data.lists.monitoring || [])) {
       stacks.today.waiting.push({
         id: item.id, text: item.text, status: item.status,
-        waitingReason: 'monitoring', sourceList: 'monitoring',
+        envs: extractEnvs(item), waitingReason: 'monitoring', sourceList: 'monitoring',
         children: [], childCount: 0, original: item,
         links: item.links || [], events: item.events || [],
       })
@@ -118,7 +149,7 @@ export function processForStack(data: TodoData) {
   }
 
   const doneItems: StackItem[] = (data.lists.done || []).map(item => ({
-    id: item.id, text: item.text, status: item.status, sourceList: 'done',
+    id: item.id, text: item.text, status: item.status, envs: extractEnvs(item), sourceList: 'done',
     children: [], childCount: 0, original: item,
     links: item.links || [], events: item.events || [],
   }))

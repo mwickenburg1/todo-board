@@ -1,12 +1,37 @@
+import { readFileSync, writeFileSync } from 'fs'
+import { resolve, dirname } from 'path'
+import { fileURLToPath } from 'url'
 import express from 'express'
 import cors from 'cors'
-import { readData, saveData, popUndo, findTask, createTask, insertInList, createEmptySlot, getEnvStatus, setEnvStatus } from './store.js'
+import { readData, saveData, popUndo, createTask } from './store.js'
+import { parseInput, placeSectionBefore } from './helpers.js'
+import todosRouter from './routes/todos.js'
+import listsRouter from './routes/lists.js'
+import eventsRouter from './routes/events.js'
+import envStatusRouter from './routes/env-status.js'
+import { startSlackDigest, acknowledgeDigest } from './slack-digest.js'
+
+// Load .env from project root
+const __dirname = dirname(fileURLToPath(import.meta.url))
+try {
+  const envFile = readFileSync(resolve(__dirname, '..', '.env'), 'utf8')
+  for (const line of envFile.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const eq = trimmed.indexOf('=')
+    if (eq === -1) continue
+    const key = trimmed.slice(0, eq)
+    const val = trimmed.slice(eq + 1)
+    if (!process.env[key]) process.env[key] = val
+  }
+} catch {}
 
 const app = express()
 app.use(cors())
 app.use(express.json())
 
-// Undo last action
+// --- Top-level routes ---
+
 app.post('/api/undo', (req, res) => {
   try {
     const remaining = popUndo()
@@ -25,261 +50,22 @@ app.get('/api/todos', (req, res) => {
   }
 })
 
-// Mark a task as done - moves it to done list (optionally recursive)
-app.post('/api/todos/:id/done', (req, res) => {
-  try {
-    const id = parseInt(req.params.id)
-    const { recursive } = req.body || {}
-    const data = readData()
-
-    const result = findTask(data, id, { skipDone: true })
-    if (!result) return res.status(404).json({ error: 'Task not found' })
-    const { list: foundList, task } = result
-
-    const now = new Date().toISOString()
-    const completedTasks = []
-
-    if (recursive) {
-      for (const [listName, tasks] of Object.entries(data.lists)) {
-        if (!tasks || listName === 'done') continue
-        const children = tasks.filter(t => t.parent_id === id)
-        for (const child of children) {
-          child.status = 'done'
-          child.completed = now
-          child.from_list = listName
-          completedTasks.push({ ...child })
-        }
-        data.lists[listName] = tasks.filter(t => t.parent_id !== id)
-      }
-    }
-
-    const sourceFocusSlot = task.focus_slot
-    data.lists[foundList] = data.lists[foundList].filter(t => t.id !== id)
-
-    if (sourceFocusSlot && foundList === 'now') {
-      data.lists.now.push(createEmptySlot(sourceFocusSlot))
-    }
-
-    task.status = 'done'
-    task.completed = now
-    task.from_list = foundList
-
-    if (!data.lists.done) data.lists.done = []
-    data.lists.done.push(...completedTasks, task)
-
-    if (!data.completed_log) data.completed_log = []
-    data.completed_log.push(...completedTasks, task)
-
-    saveData(data)
-    res.json({ success: true, task, childrenCompleted: completedTasks.length })
-  } catch (err) {
-    res.status(500).json({ error: err.message })
-  }
-})
-
-// Delete a task permanently
-app.delete('/api/todos/:id', (req, res) => {
-  try {
-    const id = parseInt(req.params.id)
-    const data = readData()
-    const result = findTask(data, id)
-    if (!result) return res.status(404).json({ error: 'Task not found' })
-    const { list: foundList } = result
-
-    data.lists[foundList] = data.lists[foundList].filter(t => t.id !== id)
-    // Also remove children
-    for (const [listName, tasks] of Object.entries(data.lists)) {
-      if (tasks) data.lists[listName] = tasks.filter(t => t.parent_id !== id)
-    }
-    saveData(data)
-    res.json({ success: true })
-  } catch (err) {
-    res.status(500).json({ error: err.message })
-  }
-})
-
-// Move a task to a different list
-app.post('/api/todos/:id/move', (req, res) => {
-  try {
-    const id = parseInt(req.params.id)
-    const { targetList, focusSlot, asSubtaskOf, replaceFocus, category, insertBefore } = req.body
-
-    if (!targetList) return res.status(400).json({ error: 'targetList is required' })
-
-    const data = readData()
-    const result = findTask(data, id, { copy: true })
-    if (!result) return res.status(404).json({ error: 'Task not found' })
-    const { list: sourceList, task } = result
-
-    const sourceFocusSlot = task.focus_slot
-    data.lists[sourceList] = data.lists[sourceList].filter(t => t.id !== id)
-
-    if (sourceFocusSlot && sourceList === 'now' && !(targetList === 'now' && focusSlot === sourceFocusSlot)) {
-      data.lists.now.push(createEmptySlot(sourceFocusSlot))
-    }
-
-    // Case 1: Adding as a subtask of a focus item
-    if (asSubtaskOf) {
-      task.parent_id = asSubtaskOf
-      delete task.focus_slot
-      delete task.is_empty_slot
-      if (!data.lists.today) data.lists.today = []
-      insertInList(data.lists.today, task, insertBefore)
-      saveData(data)
-      return res.json({ success: true, task, from: sourceList, to: 'today', asSubtaskOf, insertBefore })
-    }
-
-    // Case 2: Replacing a focus slot
-    if (targetList === 'now' && focusSlot && replaceFocus) {
-      const existingTask = data.lists.now?.find(t => t.focus_slot === focusSlot && t.id && !t.is_empty_slot)
-
-      if (existingTask && existingTask.id !== id) {
-        const movedTask = { ...existingTask }
-        delete movedTask.focus_slot
-        data.lists.now = data.lists.now.filter(t => t.id !== existingTask.id)
-        if (!data.lists.today) data.lists.today = []
-        data.lists.today.push(movedTask)
-      }
-
-      if (data.lists.now) {
-        data.lists.now = data.lists.now.filter(t => t.focus_slot !== focusSlot || (t.id && t.id !== id))
-      }
-
-      task.focus_slot = focusSlot
-      delete task.is_empty_slot
-      data.lists.now.push(task)
-      saveData(data)
-      return res.json({ success: true, task, from: sourceList, to: 'now', replaced: existingTask?.id })
-    }
-
-    // Case 3: Moving to a regular list
-    delete task.focus_slot
-    delete task.is_empty_slot
-
-    if (sourceList === 'done') {
-      task.status = 'pending'
-      delete task.completed
-      delete task.from_list
-    }
-
-    if (category && targetList !== 'monitoring') {
-      const targetTasks = data.lists[targetList] || []
-      const categoryParent = targetTasks.find(t =>
-        !t.parent_id && t.text && t.text.toLowerCase().includes(category.toLowerCase())
-      )
-      if (categoryParent) {
-        task.parent_id = categoryParent.id
-        delete task.stored_category
-      } else {
-        task.stored_category = category
-        delete task.parent_id
-      }
-    } else if (targetList === 'monitoring') {
-      delete task.parent_id
-      delete task.stored_category
-    }
-
-    if (!data.lists[targetList]) data.lists[targetList] = []
-    insertInList(data.lists[targetList], task, insertBefore)
-
-    saveData(data)
-    res.json({ success: true, task, from: sourceList, to: targetList, category, insertBefore })
-  } catch (err) {
-    res.status(500).json({ error: err.message })
-  }
-})
-
-// Update a task
-app.patch('/api/todos/:id', (req, res) => {
-  try {
-    const id = parseInt(req.params.id)
-    const { text, context, status, in_progress_order } = req.body
-    const data = readData()
-
-    const result = findTask(data, id)
-    if (!result) return res.status(404).json({ error: 'Task not found' })
-    const { task } = result
-
-    if (text !== undefined) task.text = text
-    if (context !== undefined) task.context = context
-    if (status !== undefined) task.status = status
-    if (in_progress_order !== undefined) task.in_progress_order = in_progress_order
-
-    saveData(data)
-    res.json({ success: true, task })
-  } catch (err) {
-    res.status(500).json({ error: err.message })
-  }
-})
-
-// Add a new task
-app.post('/api/todos', (req, res) => {
-  try {
-    const { text, list, priority = 2, parent_id, status = 'pending' } = req.body
-    if (!list) return res.status(400).json({ error: 'list is required' })
-
-    const data = readData()
-    const newTask = createTask(data, { text: text || '', priority, status, parent_id: parent_id || null })
-
-    if (!data.lists[list]) data.lists[list] = []
-    data.lists[list].push(newTask)
-
-    saveData(data)
-    res.json({ success: true, task: newTask })
-  } catch (err) {
-    res.status(500).json({ error: err.message })
-  }
-})
-
-// Split a task at cursor position (Enter key) — atomic update+create+position
-app.post('/api/todos/split', (req, res) => {
-  try {
-    const { id, before, after, list, status = 'pending', beforeId } = req.body
-    const data = readData()
-
-    if (id && before !== undefined) {
-      const result = findTask(data, id)
-      if (result) result.task.text = before
-    }
-
-    const newTask = createTask(data, { text: after || '', status })
-
-    if (!data.lists[list]) data.lists[list] = []
-
-    if (beforeId) {
-      const insertIndex = data.lists[list].findIndex(t => t.id === beforeId)
-      if (insertIndex !== -1) {
-        const target = data.lists[list][insertIndex]
-        if (target.parent_id) newTask.parent_id = target.parent_id
-        data.lists[list].splice(insertIndex, 0, newTask)
-      } else {
-        data.lists[list].push(newTask)
-      }
-    } else if (id) {
-      const afterIndex = data.lists[list].findIndex(t => t.id === id)
-      if (afterIndex !== -1) {
-        const source = data.lists[list][afterIndex]
-        if (source.parent_id) newTask.parent_id = source.parent_id
-        data.lists[list].splice(afterIndex + 1, 0, newTask)
-      } else {
-        data.lists[list].push(newTask)
-      }
-    } else {
-      data.lists[list].push(newTask)
-    }
-
-    saveData(data)
-    res.json({ success: true, task: newTask })
-  } catch (err) {
-    res.status(500).json({ error: err.message })
-  }
-})
-
-// Quick capture - adds to the beginning of a list
+// Quick capture — top-level route (not under /api/todos)
 app.post('/api/capture', (req, res) => {
   try {
     const { text, horizon = 'today', status = 'pending' } = req.body
     if (!text) return res.status(400).json({ error: 'text is required' })
+
+    const parsed = parseInput(text)
+    if (parsed.type === 'section') {
+      const data = readData()
+      if (!data.lists[parsed.normalized]) data.lists[parsed.normalized] = []
+      if (data.lists[horizon]) {
+        placeSectionBefore(data, parsed.normalized, horizon)
+      }
+      saveData(data)
+      return res.json({ success: true, section: parsed.normalized })
+    }
 
     const data = readData()
     const newTask = createTask(data, {
@@ -297,317 +83,260 @@ app.post('/api/capture', (req, res) => {
   }
 })
 
-// Reorder - move item to a specific position within its list
-app.post('/api/todos/:id/reorder', (req, res) => {
+app.post('/api/slack-digest/ack', (req, res) => {
   try {
-    const id = parseInt(req.params.id)
-    const { beforeId, targetList } = req.body
-    const data = readData()
-
-    const result = findTask(data, id, { copy: true })
-    if (!result) return res.status(404).json({ error: 'Task not found' })
-    const { list: sourceList, task } = result
-
-    const destList = targetList || sourceList
-    data.lists[sourceList] = data.lists[sourceList].filter(t => t.id !== id)
-    if (!data.lists[destList]) data.lists[destList] = []
-    insertInList(data.lists[destList], task, beforeId)
-
-    saveData(data)
-    res.json({ success: true, task, from: sourceList, to: destList })
+    const ackedAt = acknowledgeDigest()
+    res.json({ success: true, ackedAt })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
 })
 
-// Create an empty list (optionally positioned before another section)
-app.post('/api/lists', (req, res) => {
-  try {
-    const { name, beforeSection } = req.body
-    if (!name) return res.status(400).json({ error: 'name is required' })
+// --- Route modules ---
 
-    const data = readData()
-    if (!data.lists[name]) data.lists[name] = []
+app.use('/api/todos', todosRouter)
+app.use('/api/lists', listsRouter)
+app.use('/api/events', eventsRouter)
+app.use('/api/env-status', envStatusRouter)
 
-    if (beforeSection && data.lists[beforeSection]) {
-      const entries = Object.entries(data.lists)
-      const newIdx = entries.findIndex(([k]) => k === name)
-      const [entry] = entries.splice(newIdx, 1)
-      const beforeIdx = entries.findIndex(([k]) => k === beforeSection)
-      if (beforeIdx !== -1) entries.splice(beforeIdx, 0, entry)
-      else entries.push(entry)
-      data.lists = Object.fromEntries(entries)
+// --- Pulse check timer ---
+// Repopulates the "pulse" list every 20 min with any missing check items.
+// Dismissing an item (click in UI) deletes it; this timer re-adds it next cycle.
+// Time blocks rotate based on current EST time.
+
+const PULSE_ITEMS = [
+  'Dehydrated -> water',
+  'Tired/pain/fuzzy/hungry -> fix',
+  "Haven't moved in 1h -> move",
+  'Just checked slack -> 20m deep work',
+  'Caring -> 0% emotional, 100% intellectual',
+  'Not on track 85-95 -> get on track',
+  'Views organized, items on list -> tidy up',
+  '15 breaths down-reg or breath hold -> reset',
+]
+
+// Daily energy blocks (EST). Each appears when its window starts.
+const TIME_BLOCKS = [
+  { start: '07:45', end: '11:00', label: '7:45-11',
+    text: 'Deep work - 100%, RPE 8/9 not 10. Leave "I could do 30 more mins". If I don\'t nail this, company drifts at 9m' },
+  { start: '11:15', end: '12:30', label: '11:15-12:30',
+    text: 'Important meetings - RPE 6/7' },
+  { start: '13:00', end: '15:00', label: '1-3 PM',
+    text: 'Trough -> MED / NSDR / Exercise' },
+  { start: '15:00', end: '17:00', label: '3-5 PM',
+    text: 'Second piece - RPE 5-6, wind down' },
+  { start: '17:00', end: '17:30', label: '5-5:30 PM',
+    text: 'Wind down, disconnect at 5:30. RPE 2-3. Pick the 1 item for DW block tmrw' },
+]
+
+// All possible time-block texts (for cleanup)
+const ALL_BLOCK_TEXTS = new Set(TIME_BLOCKS.map(b => b.text))
+const NEXT_PREFIX = 'Next: '
+
+function estNow() {
+  return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }))
+}
+
+function timeToMinutes(hhmm) {
+  const [h, m] = hhmm.split(':').map(Number)
+  return h * 60 + m
+}
+
+function currentAndNextBlock() {
+  const now = estNow()
+  const mins = now.getHours() * 60 + now.getMinutes()
+
+  let current = null
+  let next = null
+
+  for (let i = 0; i < TIME_BLOCKS.length; i++) {
+    const block = TIME_BLOCKS[i]
+    const start = timeToMinutes(block.start)
+    const end = timeToMinutes(block.end)
+    if (mins >= start && mins < end) {
+      current = block
+      next = TIME_BLOCKS[i + 1] || null
+      break
     }
-
-    saveData(data)
-    res.json({ success: true, name })
-  } catch (err) {
-    res.status(500).json({ error: err.message })
-  }
-})
-
-// Rename a list
-app.post('/api/lists/rename', (req, res) => {
-  try {
-    const { oldName, newName } = req.body
-    if (!oldName || !newName) return res.status(400).json({ error: 'oldName and newName are required' })
-    const reserved = ['now', 'monitoring', 'done']
-    if (reserved.includes(newName)) return res.status(400).json({ error: `"${newName}" is a reserved name` })
-
-    const data = readData()
-    if (!data.lists[oldName]) return res.status(404).json({ error: 'List not found' })
-
-    // Rebuild lists object to preserve position
-    const entries = Object.entries(data.lists).map(([k, v]) =>
-      k === oldName ? [newName, v] : [k, v]
-    )
-    data.lists = Object.fromEntries(entries)
-    saveData(data)
-    res.json({ success: true, from: oldName, to: newName })
-  } catch (err) {
-    res.status(500).json({ error: err.message })
-  }
-})
-
-// Delete a list (moves items to today)
-app.delete('/api/lists/:name', (req, res) => {
-  try {
-    const { name } = req.params
-    const data = readData()
-    if (!data.lists[name]) return res.status(404).json({ error: 'List not found' })
-
-    const items = data.lists[name]
-    if (items.length > 0) {
-      if (!data.lists.today) data.lists.today = []
-      data.lists.today.push(...items)
+    if (mins < start) {
+      next = block
+      break
     }
-    delete data.lists[name]
-    saveData(data)
-    res.json({ success: true, name, movedItems: items.length })
-  } catch (err) {
-    res.status(500).json({ error: err.message })
   }
-})
 
-// Reorder sections
-app.post('/api/lists/reorder', (req, res) => {
+  return { current, next }
+}
+
+function repopulatePulse() {
   try {
-    const { name, beforeName } = req.body
-    if (!name) return res.status(400).json({ error: 'name is required' })
-
     const data = readData()
-    if (!data.lists[name]) return res.status(404).json({ error: 'List not found' })
+    if (!data.lists.pulse) data.lists.pulse = []
+    let changed = false
 
-    const entries = Object.entries(data.lists)
-    const draggedIdx = entries.findIndex(([k]) => k === name)
-    const [dragged] = entries.splice(draggedIdx, 1)
-
-    if (beforeName) {
-      const beforeIdx = entries.findIndex(([k]) => k === beforeName)
-      if (beforeIdx !== -1) entries.splice(beforeIdx, 0, dragged)
-      else entries.push(dragged)
-    } else {
-      entries.push(dragged)
-    }
-
-    data.lists = Object.fromEntries(entries)
-    saveData(data)
-    res.json({ success: true, order: entries.map(([k]) => k) })
-  } catch (err) {
-    res.status(500).json({ error: err.message })
-  }
-})
-
-// Insert a new section (with an empty item) before another section
-app.post('/api/lists/insert-above', (req, res) => {
-  try {
-    const { beforeSection } = req.body
-    if (!beforeSection) return res.status(400).json({ error: 'beforeSection is required' })
-
-    const data = readData()
-    const sectionName = `untitled-${Date.now()}`
-    const newTask = createTask(data, { text: '', status: 'pending' })
-
-    // Create the section with the item
-    data.lists[sectionName] = [newTask]
-
-    // Reorder: place it before the target section
-    const entries = Object.entries(data.lists)
-    const newIdx = entries.findIndex(([k]) => k === sectionName)
-    const [entry] = entries.splice(newIdx, 1)
-    const beforeIdx = entries.findIndex(([k]) => k === beforeSection)
-    if (beforeIdx !== -1) entries.splice(beforeIdx, 0, entry)
-    else entries.push(entry)
-    data.lists = Object.fromEntries(entries)
-
-    saveData(data)
-    res.json({ success: true, section: sectionName, task: newTask })
-  } catch (err) {
-    res.status(500).json({ error: err.message })
-  }
-})
-
-// Add a link to a task
-app.post('/api/todos/:id/links', (req, res) => {
-  try {
-    const id = parseInt(req.params.id)
-    const { type, ref, label, icon } = req.body
-    if (!type || !ref) return res.status(400).json({ error: 'type and ref are required' })
-
-    const data = readData()
-    const result = findTask(data, id)
-    if (!result) return res.status(404).json({ error: 'Task not found' })
-    const { task } = result
-
-    if (!task.links) task.links = []
-    // Prevent duplicates by type+ref
-    if (task.links.some(l => l.type === type && l.ref === ref)) {
-      return res.json({ success: true, task, duplicate: true })
-    }
-    const link = { type, ref, label: label || ref, icon: icon || type, added: new Date().toISOString() }
-    task.links.push(link)
-
-    saveData(data)
-    res.json({ success: true, task, link })
-  } catch (err) {
-    res.status(500).json({ error: err.message })
-  }
-})
-
-// Remove a link from a task
-app.delete('/api/todos/:id/links/:idx', (req, res) => {
-  try {
-    const id = parseInt(req.params.id)
-    const idx = parseInt(req.params.idx)
-    const data = readData()
-    const result = findTask(data, id)
-    if (!result) return res.status(404).json({ error: 'Task not found' })
-    const { task } = result
-
-    if (!task.links || idx < 0 || idx >= task.links.length) {
-      return res.status(400).json({ error: 'Invalid link index' })
-    }
-    const removed = task.links.splice(idx, 1)[0]
-    if (task.links.length === 0) delete task.links
-
-    saveData(data)
-    res.json({ success: true, removed })
-  } catch (err) {
-    res.status(500).json({ error: err.message })
-  }
-})
-
-// Ingest an event — routes to tasks that have matching links
-app.post('/api/events', (req, res) => {
-  try {
-    const { source, ref, summary, author, ts, metadata } = req.body
-    if (!source || !ref) return res.status(400).json({ error: 'source and ref are required' })
-
-    const data = readData()
-    const event = {
-      source, ref, summary: summary || '', author: author || '',
-      ts: ts || new Date().toISOString(), metadata
-    }
-    const isLabelOnly = metadata?.is_root === true
-
-    // Collect tasks to move (can't mutate arrays during iteration)
-    const moves = []
-    let matched = 0
-    let bumped = 0
-
-    for (const [listName, tasks] of Object.entries(data.lists)) {
-      if (!tasks) continue
-      for (const task of tasks) {
-        if (!task.links) continue
-        const matchingLink = task.links.find(l => l.type === source && l.ref === ref)
-        if (!matchingLink) continue
-
-        // Update link label with latest activity
-        if (event.summary) {
-          matchingLink.label = event.author
-            ? `${event.author}: ${event.summary}`.slice(0, 100)
-            : event.summary.slice(0, 100)
-        }
-
-        // Bump to actionable: waiting → actionable within the same section, at the top
-        // monitoring items move to today list; in_progress items flip to pending in place
-        if (listName === 'monitoring') {
-          moves.push({ task, fromList: listName })
-        } else if (task.status === 'in_progress') {
-          task.status = 'pending'
-          // Move to front of list so it appears at top of actionable
-          const arr = data.lists[listName]
-          const idx = arr.indexOf(task)
-          if (idx > 0) { arr.splice(idx, 1); arr.unshift(task) }
-          bumped++
-          console.log(`[events] Bumped "${task.text}" to top of actionable in ${listName}`)
-        }
-
-        // Root messages only update the label, don't store as event
-        if (isLabelOnly) {
-          matched++
-          continue
-        }
-
-        // Store event (with dedup)
-        if (!task.events) task.events = []
-        const isDupe = task.events.some(e => e.source === event.source && e.ts === event.ts)
-        if (isDupe) continue
-        task.events.push(event)
-        if (task.events.length > 50) task.events = task.events.slice(-50)
-        matched++
+    // --- Static items: add if missing ---
+    const existing = new Set(data.lists.pulse.map(t => t.text))
+    for (const text of PULSE_ITEMS) {
+      if (!existing.has(text)) {
+        data.lists.pulse.push(createTask(data, { text, priority: 1 }))
+        changed = true
       }
     }
 
-    // Apply monitoring → today moves after iteration
-    for (const { task, fromList } of moves) {
-      const fromArr = data.lists[fromList]
-      const idx = fromArr.indexOf(task)
-      if (idx !== -1) fromArr.splice(idx, 1)
-      if (!data.lists.today) data.lists.today = []
-      task.status = 'pending'
-      data.lists.today.unshift(task)
-      bumped++
-      console.log(`[events] Moved "${task.text}" from monitoring → today/actionable`)
+    // --- Time blocks: rotate based on current EST time ---
+    const { current, next } = currentAndNextBlock()
+
+    // Remove stale block items (not current block, not current next-preview)
+    const keepTexts = new Set()
+    if (current) keepTexts.add(current.text)
+    const nextText = next ? NEXT_PREFIX + next.label + ' - ' + next.text : null
+    if (nextText) keepTexts.add(nextText)
+
+    const before = data.lists.pulse.length
+    data.lists.pulse = data.lists.pulse.filter(t => {
+      if (ALL_BLOCK_TEXTS.has(t.text) && !keepTexts.has(t.text)) return false
+      if (t.text.startsWith(NEXT_PREFIX) && !keepTexts.has(t.text)) return false
+      return true
+    })
+    if (data.lists.pulse.length !== before) changed = true
+
+    // Add current block if active and not already present
+    const nowTexts = new Set(data.lists.pulse.map(t => t.text))
+    if (current && !nowTexts.has(current.text)) {
+      data.lists.pulse.unshift(createTask(data, { text: current.text, priority: 1, context: 'time-block' }))
+      changed = true
     }
 
-    if (matched > 0 || bumped > 0) saveData(data)
-    res.json({ success: true, matched, bumped })
-  } catch (err) {
-    res.status(500).json({ error: err.message })
-  }
-})
+    // Add next-block preview if not already present
+    if (nextText && !nowTexts.has(nextText)) {
+      data.lists.pulse.push(createTask(data, { text: nextText, priority: 1, context: 'time-next' }))
+      changed = true
+    }
 
-// Get events for a task
-app.get('/api/todos/:id/events', (req, res) => {
+    if (changed) saveData(data)
+  } catch (err) {
+    console.error('Pulse repopulate error:', err.message)
+  }
+}
+
+// --- Daily routine checklist ---
+// Items activate at specific EST times, must be explicitly checked off.
+// Reset daily. Checked items don't reappear until next day.
+
+const ROUTINE_ITEMS = [
+  { time: '06:15', text: 'Exercise done' },
+  { time: '06:15', text: 'Todo board checked (not Slack)' },
+  { time: '08:15', text: 'At least 3 Claude instances launched with specs' },
+  { time: '11:00', text: '11am review: check board, review Claude outputs, relaunch/redirect' },
+  { time: '12:00', text: 'Pill day', day: 0 }, // Sunday only
+  { time: '14:00', text: '2pm review: check board, review Claude outputs, relaunch/redirect' },
+  { time: '16:30', text: '4:30 review: Claude outputs, course-correct' },
+  { time: '17:00', text: "Tomorrow's 4-8 tasks listed (even rough one-liners)" },
+  { time: '17:00', text: 'Top 4 ranked by leverage' },
+  { time: '17:00', text: "Calendar checked — tomorrow's fragmentation noted" },
+  { time: '17:30', text: 'Disconnected' },
+]
+
+// Track checked routine items per day: Map<text, 'YYYY-MM-DD'>
+// Persisted to disk so server restarts don't lose checked state
+const ROUTINE_CHECKED_PATH = resolve(process.env.HOME, 'todos-repo', '.routine-checked.json')
+let routineCheckedToday = new Map()
+try {
+  const saved = JSON.parse(readFileSync(ROUTINE_CHECKED_PATH, 'utf8'))
+  routineCheckedToday = new Map(Object.entries(saved))
+} catch {}
+
+function persistRoutineChecked() {
+  writeFileSync(ROUTINE_CHECKED_PATH, JSON.stringify(Object.fromEntries(routineCheckedToday)))
+}
+
+function estDateStr() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' })
+}
+
+function repopulateRoutine() {
   try {
-    const id = parseInt(req.params.id)
     const data = readData()
-    const result = findTask(data, id)
-    if (!result) return res.status(404).json({ error: 'Task not found' })
-    res.json({ events: result.task.events || [], links: result.task.links || [] })
-  } catch (err) {
-    res.status(500).json({ error: err.message })
-  }
-})
+    if (!data.lists.pulse) data.lists.pulse = []
+    const now = estNow()
+    const nowMins = now.getHours() * 60 + now.getMinutes()
+    const today = estDateStr()
+    let changed = false
 
-// Env status
-app.post('/api/env-status', (req, res) => {
+    // Clear yesterday's checks
+    let cleared = false
+    for (const [text, date] of routineCheckedToday) {
+      if (date !== today) { routineCheckedToday.delete(text); cleared = true }
+    }
+    if (cleared) persistRoutineChecked()
+
+    // Remove routine items from previous days (stale)
+    const beforeLen = data.lists.pulse.length
+    data.lists.pulse = data.lists.pulse.filter(t => {
+      if (t.context !== 'routine') return true
+      // Keep if created today
+      if (t.created) {
+        const createdDate = new Date(t.created).toLocaleDateString('en-US', { timeZone: 'America/New_York' })
+        const todayDate = now.toLocaleDateString('en-US', { timeZone: 'America/New_York' })
+        if (createdDate !== todayDate) return false
+      }
+      return true
+    })
+    if (data.lists.pulse.length !== beforeLen) changed = true
+
+    const existing = new Set(data.lists.pulse.filter(t => t.context === 'routine').map(t => t.text))
+
+    for (const item of ROUTINE_ITEMS) {
+      if (item.day !== undefined && now.getDay() !== item.day) continue // wrong day of week
+      const activateMins = timeToMinutes(item.time)
+      if (nowMins < activateMins) continue // not yet
+      if (existing.has(item.text)) continue // already in list
+      if (routineCheckedToday.get(item.text) === today) continue // checked off today
+
+      data.lists.pulse.push(createTask(data, {
+        text: item.text,
+        priority: 1,
+        context: 'routine',
+      }))
+      changed = true
+    }
+
+    if (changed) saveData(data)
+  } catch (err) {
+    console.error('Routine repopulate error:', err.message)
+  }
+}
+
+app.post('/api/routine/check', (req, res) => {
   try {
-    const { vm, env, branch, status, task, lastActivity } = req.body
-    const key = `${vm || 'vm1'}/${env}`
-    setEnvStatus(key, { vm: vm || 'vm1', env, branch, status, task, lastActivity })
+    const { id } = req.body
+    if (!id) return res.status(400).json({ error: 'id is required' })
+
+    const data = readData()
+    const item = data.lists.pulse?.find(t => t.id === id && t.context === 'routine')
+    if (!item) return res.status(404).json({ error: 'Not found' })
+
+    // Mark as checked for today and persist
+    routineCheckedToday.set(item.text, estDateStr())
+    persistRoutineChecked()
+
+    // Remove from pulse list
+    data.lists.pulse = data.lists.pulse.filter(t => t.id !== id)
+    saveData(data)
+
     res.json({ success: true })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
 })
 
-app.get('/api/env-status', (req, res) => {
-  res.json(getEnvStatus())
-})
+// Seed on startup, then every 20 min
+repopulatePulse()
+repopulateRoutine()
+setInterval(repopulatePulse, 30 * 60 * 1000)
+setInterval(repopulateRoutine, 60 * 1000) // check every minute for new activations
 
 const PORT = 5181
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Todo API server running on http://0.0.0.0:${PORT}`)
+  startSlackDigest()
 })

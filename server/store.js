@@ -21,8 +21,16 @@ function saveSnapshot() {
   persistUndoStack()
 }
 
+// Pinned lists that are auto-created if missing
+export const PINNED_LISTS = ['daily-goals']
+
 export function readData() {
-  return JSON.parse(readFileSync(TODOS_PATH, 'utf-8'))
+  const data = JSON.parse(readFileSync(TODOS_PATH, 'utf-8'))
+  // Auto-create pinned lists if missing
+  for (const name of PINNED_LISTS) {
+    if (!data.lists[name]) data.lists[name] = []
+  }
+  return data
 }
 
 export function saveData(data) {

@@ -1,11 +1,15 @@
 import { useState, useEffect, useRef } from 'react'
 import type { DragEvent as ReactDragEvent } from 'react'
 import type { StackItem } from './types'
-import { StackLine, InlineCapture, InsertGap, placeCaretFromClick } from './StackLine'
+import { StackLine, placeCaretFromClick } from './StackLine'
+import { InlineCapture, InsertGap } from './InlineCapture'
 import { navigateFrom, consumeArrowNav } from './navigation'
 
-export function StackSection({ name, actionable, waiting, collapsed, onToggle, onCapture, onDone, onUpdate, onToggleStatus, onDragStart, onDragEnd, draggedItem, onDropItem, expandedItems, onToggleExpand, onRename, onCreateStack, onInsertItem, onSplitItem, onInsertAbove, onDeleteTask, onDeleteStack, onSectionDragStart, onSectionDragEnd, onSectionDrop, draggingSection, onAddLink, onRemoveLink }: {
+export function StackSection({ name, label, isFirstSection, pinned, actionable, waiting, collapsed, onToggle, onCapture, onDone, onUpdate, onToggleStatus, onDragStart, onDragEnd, draggedItem, onDropItem, expandedItems, onToggleExpand, onRename, onCreateStack, onInsertItem, onSplitItem, onInsertAbove, onInsertBelow, onDeleteTask, onDeleteStack, onSectionDragStart, onSectionDragEnd, onSectionDrop, draggingSection, onAddLink, onRemoveLink, onMoveItem }: {
   name: string
+  label?: string
+  isFirstSection?: boolean
+  pinned?: boolean
   actionable: StackItem[]
   waiting: StackItem[]
   collapsed: boolean
@@ -25,6 +29,7 @@ export function StackSection({ name, actionable, waiting, collapsed, onToggle, o
   onInsertItem?: (stack: string, column: 'actionable' | 'waiting', text: string, beforeId?: number) => void
   onSplitItem?: (id: number, before: string, after: string, stack: string, column: 'actionable' | 'waiting') => void
   onInsertAbove?: () => void
+  onInsertBelow?: () => void
   onDeleteTask?: (id: number) => void
   onDeleteStack?: (name: string) => void
   onSectionDragStart?: (name: string) => void
@@ -33,9 +38,11 @@ export function StackSection({ name, actionable, waiting, collapsed, onToggle, o
   draggingSection?: string | null
   onAddLink?: (id: number, link: { type: string, ref: string, label?: string }) => void
   onRemoveLink?: (id: number, idx: number) => void
+  onMoveItem?: (id: number, column: 'actionable' | 'waiting', direction: 'up' | 'down') => void
 }) {
+  const displayName = label || name.replace(/-/g, ' ')
   const [editingName, setEditingName] = useState(false)
-  const [nameText, setNameText] = useState(name)
+  const [nameText, setNameText] = useState(displayName)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const nameRef = useRef<HTMLInputElement>(null)
 
@@ -58,12 +65,10 @@ export function StackSection({ name, actionable, waiting, collapsed, onToggle, o
     }
   }, [editingName, confirmingDelete])
 
-  const RESERVED_NAMES = ['now', 'monitoring', 'done']
-
   const saveName = () => {
-    const normalized = nameText.trim().toLowerCase().replace(/\s+/g, '-')
-    if (normalized && normalized !== name && !RESERVED_NAMES.includes(normalized) && onRename) {
-      onRename(name, normalized)
+    const trimmed = nameText.trim()
+    if (trimmed && trimmed !== displayName && onRename) {
+      onRename(name, trimmed)
     }
     setEditingName(false)
   }
@@ -139,6 +144,7 @@ export function StackSection({ name, actionable, waiting, collapsed, onToggle, o
               <div className="flex-1">
                 <StackLine
                   item={item}
+                  isBold={isFirstSection && column === 'actionable' && idx === 0}
                   onDone={onDone}
                   onUpdate={onUpdate}
                   onToggleStatus={onToggleStatus}
@@ -147,6 +153,7 @@ export function StackSection({ name, actionable, waiting, collapsed, onToggle, o
                   onDelete={onDeleteTask}
                   onAddLink={onAddLink}
                   onRemoveLink={onRemoveLink}
+                  onMoveItem={onMoveItem ? (id, direction) => onMoveItem(id, column, direction) : undefined}
                   navCol={column}
                   navSection={name}
                   navIdx={idx}
@@ -160,7 +167,7 @@ export function StackSection({ name, actionable, waiting, collapsed, onToggle, o
                     } else if (onInsertItem) {
                       onUpdate(id, { text: before.trim() })
                       const nextItem = items[idx + 1]
-                      onInsertItem(name, column, after.trim(), nextItem?.id)
+                      onInsertItem(name, column, after.trim(), nextItem?.id ?? undefined)
                     }
                   } : undefined}
                 />
@@ -192,6 +199,7 @@ export function StackSection({ name, actionable, waiting, collapsed, onToggle, o
       <InlineCapture
         onCapture={(text) => onCapture(text, column)}
         onCreateStack={onCreateStack}
+        onInsertBelow={onInsertBelow}
         navCol={column}
         navSection={name}
       />
@@ -214,9 +222,9 @@ export function StackSection({ name, actionable, waiting, collapsed, onToggle, o
   }
 
   return (
-    <div className="mb-10">
-      {/* Section drop zone */}
-      {draggingSection && draggingSection !== name && (
+    <div className="mb-4">
+      {/* Section drop zone (not shown for pinned sections — can't reorder above them) */}
+      {!pinned && draggingSection && draggingSection !== name && (
         <div
           className="h-1 -mt-1 mb-0 rounded bg-blue-400 opacity-0 transition-opacity"
           onDragOver={(e) => { e.preventDefault(); (e.currentTarget as HTMLElement).style.opacity = '1' }}
@@ -236,7 +244,7 @@ export function StackSection({ name, actionable, waiting, collapsed, onToggle, o
           // Enter edit mode when clicking anywhere on the header row (except toggle button)
           if (!editingName && !(e.target as HTMLElement).closest('button') && !(e.target as HTMLElement).closest('[draggable]')) {
             clickXRef.current = e.clientX
-            setNameText(name)
+            setNameText(displayName)
             setEditingName(true)
           }
         }}
@@ -262,17 +270,17 @@ export function StackSection({ name, actionable, waiting, collapsed, onToggle, o
             }}
             onBlur={() => { setConfirmingDelete(false); setEditingName(false) }}
           >
-            Delete section "{name.replace(/-/g, ' ')}"? <span className="text-gray-400">y / n</span>
+            Delete section "{displayName}"? <span className="text-gray-400">y / n</span>
           </span>
         ) : editingName ? (
           <input
             ref={nameRef}
             value={nameText}
-            data-dirty={nameText !== name ? 'true' : undefined}
+            data-dirty={nameText !== displayName ? 'true' : undefined}
             onChange={(e) => setNameText(e.target.value)}
             onBlur={saveName}
             onKeyDown={(e) => {
-              if (e.key === 'Backspace' && onDeleteStack) {
+              if (e.key === 'Backspace' && onDeleteStack && !pinned) {
                 const input = nameRef.current
                 if (input && input.selectionStart === 0 && input.selectionEnd === 0) {
                   e.preventDefault()
@@ -288,10 +296,10 @@ export function StackSection({ name, actionable, waiting, collapsed, onToggle, o
                 } else if (onInsertItem) {
                   // Cursor at end → insert at top of this section
                   const firstItem = actionable[0]
-                  onInsertItem(name, 'actionable', '', firstItem?.id)
+                  onInsertItem(name, 'actionable', '', firstItem?.id ?? undefined)
                 }
               }
-              if (e.key === 'Escape') { setNameText(name); setEditingName(false) }
+              if (e.key === 'Escape') { setNameText(displayName); setEditingName(false) }
               if (e.key === 'ArrowDown') {
                 e.preventDefault()
                 saveName()
@@ -307,22 +315,24 @@ export function StackSection({ name, actionable, waiting, collapsed, onToggle, o
           />
         ) : (
           <h2 className="flex-1 text-lg font-semibold text-gray-800 cursor-text">
-            {name.replace(/-/g, ' ')}
+            {displayName}
           </h2>
         )}
-        {/* Drag handle for section */}
-        <span
-          className="shrink-0 cursor-grab active:cursor-grabbing opacity-0 group-hover/header:opacity-30 transition-opacity select-none text-[10px] text-gray-400 w-3 ml-1"
-          draggable
-          onDragStart={(e) => {
-            e.dataTransfer.effectAllowed = 'move'
-            e.dataTransfer.setData('application/x-section', name)
-            onSectionDragStart?.(name)
-          }}
-          onDragEnd={() => onSectionDragEnd?.()}
-        >
-          &#x2807;
-        </span>
+        {/* Drag handle for section (hidden for pinned sections) */}
+        {!pinned && (
+          <span
+            className="shrink-0 cursor-grab active:cursor-grabbing opacity-0 group-hover/header:opacity-30 transition-opacity select-none text-[10px] text-gray-400 w-3 ml-1"
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.effectAllowed = 'move'
+              e.dataTransfer.setData('application/x-section', name)
+              onSectionDragStart?.(name)
+            }}
+            onDragEnd={() => onSectionDragEnd?.()}
+          >
+            &#x2807;
+          </span>
+        )}
       </div>
 
       {!collapsed && (
@@ -336,7 +346,7 @@ export function StackSection({ name, actionable, waiting, collapsed, onToggle, o
 
           <div className="w-px bg-gray-100 self-stretch" />
 
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 opacity-50">
             <div className="text-[10px] uppercase tracking-wider text-amber-400 mb-2 font-medium">
               Waiting
             </div>

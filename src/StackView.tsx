@@ -1,75 +1,16 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import type { DragEvent as ReactDragEvent } from 'react'
-import type { TodoData, StackItem, EnvStatusRemote } from './stack/types'
-import { processForStack } from './stack/data'
-import { DocumentLine } from './stack/StackLine'
+import type { Todo, TodoData, StackItem, EnvStatusRemote } from './stack/types'
+import { processForStack, PINNED_LISTS } from './stack/data'
+import { DocumentLine } from './stack/InlineCapture'
 import { StackSection } from './stack/StackSection'
 import { EnvStatusBar } from './stack/EnvStatusBar'
 import { useTaskActions } from './stack/useTaskActions'
+import { useOptimisticActions } from './stack/useOptimisticActions'
+import { PulseBanner } from './stack/PulseBanner'
+import { RootGap } from './stack/RootGap'
 
-function RootGap({ active, onActivate, onDeactivate, onCreateStack, onCapture }: {
-  active: boolean
-  onActivate: () => void
-  onDeactivate: () => void
-  onCreateStack: (name: string) => void
-  onCapture: (text: string) => void
-}) {
-  const [text, setText] = useState('')
-  const inputRef = useRef<HTMLInputElement>(null)
-  const isToggle = text.startsWith('>')
-
-  useEffect(() => {
-    if (active && inputRef.current) inputRef.current.focus()
-  }, [active])
-
-  const handleSubmit = () => {
-    const trimmed = text.trim()
-    if (!trimmed) { onDeactivate(); return }
-
-    if (trimmed.startsWith('>')) {
-      const name = trimmed.slice(1).trim()
-      if (name) onCreateStack(name)
-    } else {
-      onCapture(trimmed)
-    }
-    setText('')
-    onDeactivate()
-  }
-
-  if (!active) {
-    return (
-      <div
-        className="h-6 -mt-6 cursor-text relative z-10"
-        onClick={onActivate}
-      />
-    )
-  }
-
-  return (
-    <div className="-mt-4 mb-2">
-      <input
-        ref={inputRef}
-        type="text"
-        value={text}
-        data-dirty={text ? 'true' : undefined}
-        onChange={(e) => setText(e.target.value)}
-        onBlur={() => { if (!text.trim()) { setText(''); onDeactivate() } }}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') handleSubmit()
-          if (e.key === 'Escape') { setText(''); onDeactivate() }
-        }}
-        placeholder="Type to add task, or > to create section..."
-        className={`w-full bg-transparent border-none outline-none py-[3px] px-1 placeholder:text-gray-300 transition-all ${
-          isToggle
-            ? 'text-lg font-semibold text-gray-800'
-            : 'text-[13px] text-gray-700'
-        }`}
-      />
-    </div>
-  )
-}
-
-export default function StackView({ onSwitchView }: { onSwitchView: () => void }) {
+export default function StackView() {
   const [data, setData] = useState<TodoData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [envStatusRemote, setEnvStatusRemote] = useState<Record<string, EnvStatusRemote>>({})
@@ -78,11 +19,15 @@ export default function StackView({ onSwitchView }: { onSwitchView: () => void }
   const [draggedItem, setDraggedItem] = useState<StackItem | null>(null)
   const [draggingSection, setDraggingSection] = useState<string | null>(null)
   const [activeRootGap, setActiveRootGap] = useState<number | null>(null)
+  const [gapSpacers, setGapSpacers] = useState<Record<number, number>>({})
 
   const lastJsonRef = useRef('')
   const lastEnvJsonRef = useRef('')
 
   const fetchData = useCallback(() => {
+    const active = document.activeElement as HTMLInputElement
+    if (active?.tagName === 'INPUT' && active.dataset.dirty === 'true') return
+
     fetch('/api/todos')
       .then(res => res.text())
       .then(text => {
@@ -109,7 +54,7 @@ export default function StackView({ onSwitchView }: { onSwitchView: () => void }
     return () => clearInterval(interval)
   }, [fetchData])
 
-  // Cmd+Z / Ctrl+Z undo — only when not editing an input
+  // Cmd+Z / Ctrl+Z undo
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'z' && !e.shiftKey) {
@@ -127,6 +72,7 @@ export default function StackView({ onSwitchView }: { onSwitchView: () => void }
   }, [fetchData])
 
   const actions = useTaskActions(fetchData)
+  const optimistic = useOptimisticActions(actions, setData)
 
   const handleDragStart = (e: ReactDragEvent, item: StackItem) => {
     setDraggedItem(item)
@@ -158,55 +104,87 @@ export default function StackView({ onSwitchView }: { onSwitchView: () => void }
   if (!data || !processed) return <div className="p-8 text-gray-400 text-sm">Loading...</div>
 
   const { stacks, stackNames, doneItems, envSlots } = processed
+  const pulseItems = (data.lists.pulse || []).filter(t => t.id && t.status !== 'done')
+
+  const dismissPulse = async (id: number) => {
+    setData(prev => {
+      if (!prev) return prev
+      return { ...prev, lists: { ...prev.lists, pulse: (prev.lists.pulse || []).filter(t => t.id !== id) } }
+    })
+    try { await fetch(`/api/todos/${id}`, { method: 'DELETE' }) } catch {}
+  }
 
   return (
     <div className="min-h-screen bg-white pb-16">
-      {/* Header */}
-      <div className="max-w-6xl mx-auto px-8 pt-8 pb-6">
-        <div className="flex items-baseline justify-between">
-          <h1 className="text-2xl font-bold text-gray-800">Tasks</h1>
-          <button
-            onClick={onSwitchView}
-            className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
-          >
-            Board view &rarr;
-          </button>
-        </div>
-      </div>
+      <div className="max-w-6xl mx-auto px-8 pt-8">
+        <PulseBanner items={pulseItems} onDismiss={dismissPulse} />
 
-      {/* Stacks */}
-      <div className="max-w-6xl mx-auto px-8">
+        {/* Pinned sections */}
+        {PINNED_LISTS.filter(name => stacks[name]).map(name => (
+          <StackSection
+            key={name}
+            name={name}
+            label={data.section_labels?.[name] || 'Daily Goals'}
+            pinned
+            actionable={stacks[name]?.actionable || []}
+            waiting={stacks[name]?.waiting || []}
+            collapsed={collapsedStacks.has(name)}
+            onToggle={() => toggleStack(name)}
+            onCapture={(text, column) => optimistic.capture(text, name, column)}
+            onDone={actions.markDone}
+            onUpdate={actions.updateTask}
+            onToggleStatus={optimistic.toggleStatus}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+            draggedItem={draggedItem}
+            onDropItem={actions.dropItem}
+            expandedItems={expandedItems}
+            onToggleExpand={toggleExpand}
+            onRename={optimistic.renameStack}
+            onInsertItem={optimistic.insertItem}
+            onSplitItem={optimistic.splitItem}
+            onDeleteTask={actions.deleteTask}
+            onAddLink={actions.addLink}
+            onRemoveLink={actions.removeLink}
+            onMoveItem={(id, column, direction) => optimistic.moveItem(id, name, column, direction)}
+          />
+        ))}
+
         {stackNames.map((name, i) => (
           <div key={name}>
-            {/* Root-level gap before each section */}
             <RootGap
               active={activeRootGap === i}
               onActivate={() => setActiveRootGap(i)}
               onDeactivate={() => setActiveRootGap(null)}
-              onCreateStack={(sectionName) => actions.createStack(sectionName, name)}
-              onCapture={(text) => actions.capture(text, name, 'actionable')}
+              onCreateStack={(sectionName) => optimistic.createStack(sectionName, name)}
+              onCapture={(text) => optimistic.capture(text, name, 'actionable')}
+              spacers={gapSpacers[i] || 0}
+              onSetSpacers={(n) => setGapSpacers(prev => ({ ...prev, [i]: n }))}
             />
             <StackSection
               name={name}
+              label={data.section_labels?.[name]}
+              isFirstSection={i === 0}
               actionable={stacks[name]?.actionable || []}
               waiting={stacks[name]?.waiting || []}
               collapsed={collapsedStacks.has(name)}
               onToggle={() => toggleStack(name)}
-              onCapture={(text, column) => actions.capture(text, name, column)}
+              onCapture={(text, column) => optimistic.capture(text, name, column)}
               onDone={actions.markDone}
               onUpdate={actions.updateTask}
-              onToggleStatus={actions.toggleStatus}
+              onToggleStatus={optimistic.toggleStatus}
               onDragStart={handleDragStart}
               onDragEnd={handleDragEnd}
               draggedItem={draggedItem}
               onDropItem={actions.dropItem}
               expandedItems={expandedItems}
               onToggleExpand={toggleExpand}
-              onRename={actions.renameStack}
-              onCreateStack={(sectionName) => actions.createStack(sectionName, name)}
-              onInsertItem={actions.insertItem}
-              onSplitItem={actions.splitItem}
+              onRename={optimistic.renameStack}
+              onCreateStack={(sectionName) => optimistic.createStack(sectionName, name)}
+              onInsertItem={optimistic.insertItem}
+              onSplitItem={optimistic.splitItem}
               onInsertAbove={() => setActiveRootGap(i)}
+              onInsertBelow={() => setActiveRootGap(i + 1)}
               onDeleteTask={actions.deleteTask}
               onDeleteStack={actions.deleteStack}
               onSectionDragStart={setDraggingSection}
@@ -215,13 +193,24 @@ export default function StackView({ onSwitchView }: { onSwitchView: () => void }
               draggingSection={draggingSection}
               onAddLink={actions.addLink}
               onRemoveLink={actions.removeLink}
+              onMoveItem={(id, column, direction) => optimistic.moveItem(id, name, column, direction)}
             />
           </div>
         ))}
 
+        <RootGap
+          active={activeRootGap === stackNames.length}
+          onActivate={() => setActiveRootGap(stackNames.length)}
+          onDeactivate={() => setActiveRootGap(null)}
+          onCreateStack={(sectionName) => optimistic.createStack(sectionName)}
+          onCapture={(text) => optimistic.capture(text, stackNames[stackNames.length - 1] || 'today', 'actionable')}
+          spacers={gapSpacers[stackNames.length] || 0}
+          onSetSpacers={(n) => setGapSpacers(prev => ({ ...prev, [stackNames.length]: n }))}
+        />
+
         <DocumentLine
-          onCreateStack={actions.createStack}
-          onCapture={(text) => actions.capture(text, stackNames[0] || 'today', 'actionable')}
+          onCreateStack={optimistic.createStack}
+          onCapture={(text) => optimistic.capture(text, stackNames[0] || 'today', 'actionable')}
         />
 
         {/* Done - collapsed by default */}
@@ -245,7 +234,6 @@ export default function StackView({ onSwitchView }: { onSwitchView: () => void }
         </div>
       </div>
 
-      {/* Env Status */}
       <EnvStatusBar envSlots={envSlots} remoteStatus={envStatusRemote} />
     </div>
   )

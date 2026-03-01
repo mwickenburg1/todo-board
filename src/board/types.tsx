@@ -1,30 +1,6 @@
-import type { DragEvent } from 'react'
-
-export interface Todo {
-  id: number | null
-  text: string
-  priority: number
-  context: string
-  status: 'pending' | 'in_progress' | 'done'
-  parent_id: number | null
-  children?: Todo[]
-  childCount?: number
-  focus_slot?: string
-  is_empty_slot?: boolean
-  stored_category?: string
-  in_progress_order?: number
-}
-
-export interface TodoData {
-  lists: {
-    now?: Todo[]
-    today?: Todo[]
-    tomorrow?: Todo[]
-    backlog?: Todo[]
-    monitoring?: Todo[]
-    [key: string]: Todo[] | undefined
-  }
-}
+// Re-export shared types for board view consumers
+export type { Todo, TodoData } from '../shared/types'
+import type { Todo } from '../shared/types'
 
 export function DragHandle({ className = '' }: { className?: string }) {
   return (

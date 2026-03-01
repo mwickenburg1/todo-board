@@ -1,5 +1,6 @@
 import { useCallback } from 'react'
 import { setPendingFocus } from './navigation'
+import { columnToStatus } from '../shared/helpers'
 
 function post(url: string, body?: object) {
   return fetch(url, {
@@ -21,7 +22,7 @@ export function useTaskActions(fetchData: () => void) {
   const capture = useCallback(async (text: string, stack: string, column: 'actionable' | 'waiting') => {
     await post('/api/capture', {
       text, horizon: stack,
-      status: column === 'waiting' ? 'in_progress' : 'pending'
+      status: columnToStatus(column)
     })
     fetchData()
   }, [fetchData])
@@ -45,7 +46,7 @@ export function useTaskActions(fetchData: () => void) {
 
   const dropItem = useCallback(async (itemId: number, targetStack: string, targetColumn: 'actionable' | 'waiting', beforeId?: number) => {
     await patch(`/api/todos/${itemId}`, {
-      status: targetColumn === 'waiting' ? 'in_progress' : 'pending'
+      status: columnToStatus(targetColumn)
     })
     await post(`/api/todos/${itemId}/move`, {
       targetList: targetStack, insertBefore: beforeId
@@ -77,7 +78,7 @@ export function useTaskActions(fetchData: () => void) {
   const insertItem = useCallback(async (stack: string, column: 'actionable' | 'waiting', text: string, beforeId?: number) => {
     const res = await post('/api/todos/split', {
       after: text || '', list: stack,
-      status: column === 'waiting' ? 'in_progress' : 'pending',
+      status: columnToStatus(column),
       beforeId
     })
     const { task } = await res.json()
@@ -88,7 +89,7 @@ export function useTaskActions(fetchData: () => void) {
   const splitItem = useCallback(async (id: number, before: string, after: string, stack: string, column: 'actionable' | 'waiting') => {
     const res = await post('/api/todos/split', {
       id, before, after, list: stack,
-      status: column === 'waiting' ? 'in_progress' : 'pending'
+      status: columnToStatus(column)
     })
     const { task } = await res.json()
     if (task?.id) setPendingFocus(task.id)
@@ -107,6 +108,11 @@ export function useTaskActions(fetchData: () => void) {
     fetchData()
   }, [fetchData])
 
+  const moveItem = useCallback(async (id: number, list: string, beforeId?: number) => {
+    await post(`/api/todos/${id}/reorder`, { targetList: list, beforeId })
+    fetchData()
+  }, [fetchData])
+
   const addLink = useCallback(async (id: number, link: { type: string, ref: string, label?: string, icon?: string }) => {
     await post(`/api/todos/${id}/links`, link)
     fetchData()
@@ -120,6 +126,6 @@ export function useTaskActions(fetchData: () => void) {
   return {
     capture, markDone, updateTask, toggleStatus, dropItem, deleteTask,
     createStack, renameStack, deleteStack, insertItem, splitItem, reorderSections, insertAboveSection,
-    addLink, removeLink
+    moveItem, addLink, removeLink
   }
 }
