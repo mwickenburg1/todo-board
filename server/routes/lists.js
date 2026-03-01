@@ -52,8 +52,8 @@ router.delete('/:name', (req, res) => {
 
     const items = data.lists[name]
     if (items.length > 0) {
-      if (!data.lists.today) data.lists.today = []
-      data.lists.today.push(...items)
+      if (!data.lists.queue) data.lists.queue = []
+      data.lists.queue.push(...items)
     }
     delete data.lists[name]
     saveData(data)

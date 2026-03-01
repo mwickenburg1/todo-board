@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from 'fs'
+import { execFile } from 'child_process'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import express from 'express'
@@ -30,6 +31,29 @@ const app = express()
 app.use(cors())
 app.use(express.json())
 
+// --- Cursor IPC: read socket from file written by active sessions ---
+function cursorEnv() {
+  try {
+    const sock = readFileSync('/home/ubuntu/.cursor-ipc-socket', 'utf8').trim()
+    if (sock) return { ...process.env, VSCODE_IPC_HOOK_CLI: sock }
+  } catch {}
+  return process.env
+}
+
+// --- Open env workspace in Cursor ---
+app.post('/api/open-env', (req, res) => {
+  const { env } = req.body
+  if (!env || !/^env[1-8]$/.test(env)) {
+    return res.status(400).json({ error: 'Invalid env, must be env1-env8' })
+  }
+  const workspace = `/home/ubuntu/${env}.code-workspace`
+  execFile('cursor', [workspace], { timeout: 5000, env: cursorEnv() }, (err) => {
+    if (err) return res.status(500).json({ error: err.message })
+    res.json({ ok: true, env, workspace })
+  })
+})
+
+
 // --- Top-level routes ---
 
 app.post('/api/undo', (req, res) => {
@@ -53,7 +77,7 @@ app.get('/api/todos', (req, res) => {
 // Quick capture — top-level route (not under /api/todos)
 app.post('/api/capture', (req, res) => {
   try {
-    const { text, horizon = 'today', status = 'pending' } = req.body
+    const { text, horizon = 'queue', status = 'pending' } = req.body
     if (!text) return res.status(400).json({ error: 'text is required' })
 
     const parsed = parseInput(text)
@@ -111,7 +135,7 @@ const PULSE_ITEMS = [
   'Just checked slack -> 20m deep work',
   'Caring -> 0% emotional, 100% intellectual',
   'Not on track 85-95 -> get on track',
-  'Views organized, items on list -> tidy up',
+  'Views organized, Hazeover at 85%, items on list -> tidy up',
   '15 breaths down-reg or breath hold -> reset',
 ]
 
@@ -224,7 +248,7 @@ function repopulatePulse() {
 
 const ROUTINE_ITEMS = [
   { time: '06:15', text: 'Exercise done' },
-  { time: '06:15', text: 'Todo board checked (not Slack)' },
+  { time: '06:15', text: 'Any urgent flags overnight?' },
   { time: '08:15', text: 'At least 3 Claude instances launched with specs' },
   { time: '11:00', text: '11am review: check board, review Claude outputs, relaunch/redirect' },
   { time: '12:00', text: 'Pill day', day: 0 }, // Sunday only
@@ -329,8 +353,7 @@ app.post('/api/routine/check', (req, res) => {
   }
 })
 
-// Seed on startup, then every 20 min
-repopulatePulse()
+// Routine seeds on startup; pulse only on interval (so dismissals survive restarts)
 repopulateRoutine()
 setInterval(repopulatePulse, 30 * 60 * 1000)
 setInterval(repopulateRoutine, 60 * 1000) // check every minute for new activations

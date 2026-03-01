@@ -188,6 +188,11 @@ export async function scanThreadActivity(since) {
     )
     if (newReplies.length === 0) continue
 
+    // Skip if I already replied after the last message from someone else
+    const lastOtherTs = parseFloat(newReplies[newReplies.length - 1].ts)
+    const myReplyAfter = msgs.some(r => r.user === USER_ID && parseFloat(r.ts) > lastOtherTs)
+    if (myReplyAfter) continue
+
     const context = []
     for (const r of msgs.slice(-10)) {
       const who = r.user === USER_ID ? 'me' : await resolveUser(r.user)

@@ -165,10 +165,10 @@ router.post('/:id/move', (req, res) => {
       task.parent_id = asSubtaskOf
       delete task.focus_slot
       delete task.is_empty_slot
-      if (!data.lists.today) data.lists.today = []
-      insertInList(data.lists.today, task, insertBefore)
+      if (!data.lists.queue) data.lists.queue = []
+      insertInList(data.lists.queue, task, insertBefore)
       saveData(data)
-      return res.json({ success: true, task, from: sourceList, to: 'today', asSubtaskOf, insertBefore })
+      return res.json({ success: true, task, from: sourceList, to: 'queue', asSubtaskOf, insertBefore })
     }
 
     if (targetList === 'now' && focusSlot && replaceFocus) {
@@ -178,8 +178,8 @@ router.post('/:id/move', (req, res) => {
         const movedTask = { ...existingTask }
         delete movedTask.focus_slot
         data.lists.now = data.lists.now.filter(t => t.id !== existingTask.id)
-        if (!data.lists.today) data.lists.today = []
-        data.lists.today.push(movedTask)
+        if (!data.lists.queue) data.lists.queue = []
+        data.lists.queue.push(movedTask)
       }
 
       if (data.lists.now) {
@@ -233,7 +233,7 @@ router.post('/:id/move', (req, res) => {
 router.patch('/:id', (req, res) => {
   try {
     const id = parseInt(req.params.id)
-    const { text, context, status, in_progress_order } = req.body
+    const { text, context, status, in_progress_order, escalation } = req.body
     const data = readData()
 
     const result = findTask(data, id)
@@ -255,8 +255,31 @@ router.patch('/:id', (req, res) => {
 
     if (text !== undefined) task.text = text
     if (context !== undefined) task.context = context
-    if (status !== undefined) task.status = status
+    if (status !== undefined) {
+      // Moving from in_progress → pending: move to bottom of list
+      if (status === 'pending' && task.status === 'in_progress') {
+        const listArr = data.lists[sourceList]
+        const idx = listArr.indexOf(task)
+        if (idx !== -1) {
+          listArr.splice(idx, 1)
+          listArr.push(task)
+        }
+      }
+      task.status = status
+    }
     if (in_progress_order !== undefined) task.in_progress_order = in_progress_order
+    if (escalation !== undefined) {
+      // Only one item per escalation level — clear others first
+      if (escalation > 0) {
+        for (const [, items] of Object.entries(data.lists)) {
+          if (!items) continue
+          for (const t of items) {
+            if (t.escalation === escalation && t.id !== id) t.escalation = 0
+          }
+        }
+      }
+      task.escalation = escalation
+    }
 
     saveData(data)
     res.json({ success: true, task })
