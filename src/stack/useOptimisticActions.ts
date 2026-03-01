@@ -47,7 +47,14 @@ export function useOptimisticActions(actions: Actions, setData: SetData) {
         const idx = items.findIndex(t => t.id === id)
         if (idx !== -1) {
           const newItems = [...items]
-          newItems[idx] = { ...newItems[idx], status: newStatus as Todo['status'] }
+          const updated = { ...newItems[idx], status: newStatus as Todo['status'] }
+          // Moving to actionable (pending) → go to bottom
+          if (newStatus === 'pending') {
+            newItems.splice(idx, 1)
+            newItems.push(updated)
+          } else {
+            newItems[idx] = updated
+          }
           newLists[listName] = newItems
           break
         }

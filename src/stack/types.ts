@@ -13,6 +13,7 @@ export interface StackItem {
   children: StackItem[]
   childCount: number
   original: Todo
+  escalation?: number
   links: TaskLink[]
   events: TaskEvent[]
 }

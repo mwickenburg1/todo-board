@@ -17,19 +17,58 @@ const ENV_SLOT_COLORS: Record<string, string> = {
   env8: 'bg-indigo-400',
 }
 
-function EnvSlots({ envs }: { envs: Set<string> }) {
+function openEnv(env: string, copyPrompt?: string) {
+  // Use vscode-remote URI — browser on Mac triggers Cursor to focus the SSH workspace
+  const path = `/home/ubuntu/${env}.code-workspace`
+  const host = import.meta.env.VITE_SSH_HOST || 'dev-vm'
+  const uri = `cursor://vscode-remote/ssh-remote+${host}${path}`
+  window.location.href = uri
+  if (copyPrompt) {
+    navigator.clipboard.writeText(copyPrompt).catch(() => {})
+  }
+}
+
+
+function EnvSlots({ envs, onOpenEnv }: { envs: Set<string>, onOpenEnv?: (env: string) => void }) {
   if (envs.size === 0) return null
   return (
     <span className="inline-flex gap-px items-center shrink-0" title={[...envs].join(', ')}>
-      {ENV_SLOTS.map(slot => (
-        <span
-          key={slot}
-          className={`w-[6px] h-[6px] rounded-[1px] ${
-            envs.has(slot) ? ENV_SLOT_COLORS[slot] : 'bg-gray-200'
-          }`}
-        />
-      ))}
+      {ENV_SLOTS.map(slot => {
+        const active = envs.has(slot)
+        return (
+          <span
+            key={slot}
+            className={`w-[6px] h-[6px] rounded-[1px] ${
+              active ? `${ENV_SLOT_COLORS[slot]} cursor-pointer` : 'bg-gray-200'
+            }`}
+            onClick={active && onOpenEnv ? (e) => { e.stopPropagation(); onOpenEnv(slot) } : undefined}
+          />
+        )
+      })}
     </span>
+  )
+}
+
+function EnvPicker({ onPick, onClose }: { onPick: (env: string) => void, onClose: () => void }) {
+  return (
+    <div
+      className="absolute right-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[120px]"
+      onClick={e => e.stopPropagation()}
+    >
+      <div className="px-3 py-1 text-[10px] text-gray-400 font-medium uppercase tracking-wider border-b border-gray-100">
+        Launch in...
+      </div>
+      {ENV_SLOTS.map(env => (
+        <button
+          key={env}
+          onClick={() => { onPick(env); onClose() }}
+          className="w-full text-left px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+        >
+          <span className={`w-2 h-2 rounded-sm ${ENV_SLOT_COLORS[env]}`} />
+          {env}
+        </button>
+      ))}
+    </div>
   )
 }
 
@@ -77,7 +116,7 @@ export function placeCaretFromClick(input: HTMLInputElement, clientX: number) {
   input.setSelectionRange(text.length, text.length)
 }
 
-export const StackLine = memo(function StackLine({ item, isBold, onDone, onUpdate, onToggleStatus, onDragStart, onDragEnd, isChild, onEnterSplit, onDelete, onAddLink, onRemoveLink, onMoveItem, navCol, navSection, navIdx }: {
+export const StackLine = memo(function StackLine({ item, isBold, onDone, onUpdate, onToggleStatus, onDragStart, onDragEnd, isChild, onEnterSplit, onDelete, onAddLink, onRemoveLink, onMoveItem, onEscalate, navCol, navSection, navIdx }: {
   item: StackItem
   isBold?: boolean
   onDone: (id: number, recursive?: boolean) => void
@@ -91,6 +130,7 @@ export const StackLine = memo(function StackLine({ item, isBold, onDone, onUpdat
   onAddLink?: (id: number, link: { type: string, ref: string, label?: string }) => void
   onRemoveLink?: (id: number, idx: number) => void
   onMoveItem?: (id: number, direction: 'up' | 'down') => void
+  onEscalate?: (id: number, currentLevel: number, targetLevel: number) => void
   navCol?: 'actionable' | 'waiting'
   navSection?: string
   navIdx?: number
@@ -100,6 +140,7 @@ export const StackLine = memo(function StackLine({ item, isBold, onDone, onUpdat
   const [editText, setEditText] = useState(item.text)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [showLinkPopover, setShowLinkPopover] = useState(false)
+  const [showEnvPicker, setShowEnvPicker] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const rowRef = useRef<HTMLDivElement>(null)
   const clickXRef = useRef<number | null>(null)
@@ -298,34 +339,88 @@ export const StackLine = memo(function StackLine({ item, isBold, onDone, onUpdat
         {item.events.length > 0 && (
           <EventBadge events={item.events} />
         )}
-        <EnvSlots envs={item.envs} />
+        <EnvSlots envs={item.envs} onOpenEnv={openEnv} />
         {item.waitingReason === 'in_progress' && item.envs.size === 0 && (
           <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
         )}
 
         {/* Hover actions — visible on hover OR when editing */}
         {item.id && (
-          <span className={`relative inline-flex items-center gap-1 transition-opacity ${hover || editing ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+          <span className={`relative inline-flex items-center gap-1.5 transition-opacity ${hover || editing ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
             <button
               onClick={() => onToggleStatus(item.id!, item.status)}
-              className="text-[10px] text-gray-400 hover:text-amber-500 transition-colors"
+              className="text-[13px] text-gray-400 hover:text-amber-500 transition-colors leading-none"
               title={item.status === 'in_progress' ? 'Unblock' : 'Block'}
             >
               {item.status === 'in_progress' ? '\u2192' : '\u23F8'}
             </button>
+            {onEscalate && (
+              <>
+                <button
+                  onClick={() => onEscalate(item.id!, item.escalation || 0, 1)}
+                  className={`text-[13px] font-bold transition-colors leading-none ${
+                    item.escalation === 1 ? 'text-amber-500' : 'text-gray-400 hover:text-amber-500'
+                  }`}
+                  title={item.escalation === 1 ? 'De-escalate' : 'Escalate !'}
+                >!</button>
+                <button
+                  onClick={() => onEscalate(item.id!, item.escalation || 0, 2)}
+                  className={`text-[13px] font-bold transition-colors leading-none ${
+                    item.escalation === 2 ? 'text-red-500' : 'text-gray-400 hover:text-red-500'
+                  }`}
+                  title={item.escalation === 2 ? 'De-escalate' : 'Escalate !!'}
+                >!!</button>
+              </>
+            )}
             {onAddLink && (
               <button
                 onClick={(e) => { e.stopPropagation(); setShowLinkPopover(!showLinkPopover) }}
-                className="text-[10px] text-gray-400 hover:text-blue-500 transition-colors"
+                className="text-[13px] text-gray-400 hover:text-blue-500 transition-colors leading-none"
                 title="Link to external source"
               >
                 &#x1F517;
               </button>
             )}
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                if (item.envs.size === 1) {
+                  // Single env — go directly
+                  openEnv([...item.envs][0])
+                } else if (item.envs.size > 1) {
+                  // Multiple envs — show picker
+                  setShowEnvPicker(!showEnvPicker)
+                } else {
+                  // No env linked — show picker to launch new
+                  setShowEnvPicker(!showEnvPicker)
+                }
+              }}
+              className={`text-[13px] transition-colors leading-none ${
+                item.envs.size > 0
+                  ? 'text-emerald-500 hover:text-emerald-600'
+                  : 'text-gray-400 hover:text-emerald-500'
+              }`}
+              title={item.envs.size > 0 ? 'Go to session' : 'Launch in env...'}
+            >
+              {item.envs.size > 0 ? '\u279C' : '\u25B6'}
+            </button>
             {showLinkPopover && onAddLink && (
               <LinkPopover
                 onAdd={(link) => onAddLink(item.id!, link)}
                 onClose={() => setShowLinkPopover(false)}
+              />
+            )}
+            {showEnvPicker && (
+              <EnvPicker
+                onPick={(env) => {
+                  if (item.envs.has(env)) {
+                    openEnv(env)
+                  } else {
+                    // Open workspace + copy /link command to clipboard for quick paste into CC
+                    openEnv(env, `/link ${item.text}`)
+                  }
+                }}
+                onClose={() => setShowEnvPicker(false)}
               />
             )}
           </span>

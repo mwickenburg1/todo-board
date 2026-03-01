@@ -28,6 +28,7 @@ export interface Todo {
   is_empty_slot?: boolean
   stored_category?: string
   in_progress_order?: number
+  escalation?: number  // 0=none, 1=!, 2=!!
   links?: TaskLink[]
   events?: TaskEvent[]
 }
@@ -35,7 +36,7 @@ export interface Todo {
 export interface TodoData {
   lists: {
     now?: Todo[]
-    today?: Todo[]
+    queue?: Todo[]
     tomorrow?: Todo[]
     backlog?: Todo[]
     monitoring?: Todo[]

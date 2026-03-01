@@ -11,7 +11,7 @@ export default function BoardView({ onSwitchView }: { onSwitchView: () => void }
   const [draggedTask, setDraggedTask] = useState<Todo | null>(null)
   const [editingTaskId, setEditingTaskId] = useState<number | null>(null)
   const [expandedTasks, setExpandedTasks] = useState<Set<number>>(new Set())
-  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set(['today', 'tomorrow', 'backlog', 'done']))
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set(['queue', 'tomorrow', 'backlog', 'done']))
 
   const lastJsonRef = useRef('')
 
@@ -137,7 +137,7 @@ export default function BoardView({ onSwitchView }: { onSwitchView: () => void }
   if (!data) return <div className="p-8">Loading...</div>
 
   const now = data.lists.now || []
-  const today = data.lists.today || []
+  const today = data.lists.queue || []
   const tomorrow = data.lists.tomorrow || []
   const backlog = data.lists.backlog || []
   const monitoring = data.lists.monitoring || []
@@ -213,29 +213,29 @@ export default function BoardView({ onSwitchView }: { onSwitchView: () => void }
           ]
           return (
             <FocusSlot key={task.focus_slot || idx} task={task} isEmpty={isEmpty} subtasks={subtasks} accent={accents[idx % accents.length]} idx={idx} onDone={markDone}
-              onDropAsSubtask={(id, insertBeforeId) => moveTask(id, 'today', { asSubtaskOf: task.id!, insertBefore: insertBeforeId })}
+              onDropAsSubtask={(id, insertBeforeId) => moveTask(id, 'queue', { asSubtaskOf: task.id!, insertBefore: insertBeforeId })}
               onDropReplace={(id) => moveTask(id, 'now', { focusSlot: task.focus_slot, replaceFocus: true })}
-              onAddSubtask={(text) => addTask(text, 'today', 1, task.id!)}
+              onAddSubtask={(text) => addTask(text, 'queue', 1, task.id!)}
               onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
           )
         })}
       </div>
 
-      <SectionHeader title="Today" color="bg-emerald-500" count={todayActiveCount} collapsed={collapsedSections.has('today')} onToggle={() => toggleSection('today')} />
-      {!collapsedSections.has('today') && (
+      <SectionHeader title="Today" color="bg-emerald-500" count={todayActiveCount} collapsed={collapsedSections.has('queue')} onToggle={() => toggleSection('queue')} />
+      {!collapsedSections.has('queue') && (
         <div className="flex gap-4 overflow-x-auto pb-4 mb-8">
-          <Column title="Long-running" count={todayLongRunning.length} color="#6b21a8" tasks={todayLongRunning} rawList={today} onDone={markDone} targetList="today" category="long-running" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDemote={(id) => demoteTask(id, 'tomorrow', 'long-running')} />
-          <Column title="Sync" count={todaySync.length} color="#c2410c" tasks={todaySync} rawList={today} onDone={markDone} targetList="today" category="sync" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDemote={(id) => demoteTask(id, 'tomorrow', 'sync')} />
+          <Column title="Long-running" count={todayLongRunning.length} color="#6b21a8" tasks={todayLongRunning} rawList={today} onDone={markDone} targetList="queue" category="long-running" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDemote={(id) => demoteTask(id, 'tomorrow', 'long-running')} />
+          <Column title="Sync" count={todaySync.length} color="#c2410c" tasks={todaySync} rawList={today} onDone={markDone} targetList="queue" category="sync" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDemote={(id) => demoteTask(id, 'tomorrow', 'sync')} />
           <Column title="Monitoring" count={monitoringTasks.length} color="#529cca" tasks={monitoringTasks} onDone={markDone} targetList="monitoring" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDemote={(id) => demoteTask(id, 'tomorrow', 'monitoring')} />
         </div>
       )}
-      {collapsedSections.has('today') && <div className="mb-8" />}
+      {collapsedSections.has('queue') && <div className="mb-8" />}
 
       <SectionHeader title="Tomorrow" color="bg-blue-400" count={tomorrowActiveCount} collapsed={collapsedSections.has('tomorrow')} onToggle={() => toggleSection('tomorrow')} />
       {!collapsedSections.has('tomorrow') && (
         <div className="flex gap-4 overflow-x-auto pb-4 mb-8">
-          <Column title="Long-running" count={tomorrowLongRunning.length} color="#6b21a8" tasks={tomorrowLongRunning} rawList={tomorrow} onDone={markDone} targetList="tomorrow" category="long-running" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onPromote={(id) => promoteTask(id, 'today', 'long-running')} onDemote={(id) => demoteTask(id, 'backlog', 'long-running')} />
-          <Column title="Sync" count={tomorrowSync.length} color="#c2410c" tasks={tomorrowSync} rawList={tomorrow} onDone={markDone} targetList="tomorrow" category="sync" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onPromote={(id) => promoteTask(id, 'today', 'sync')} onDemote={(id) => demoteTask(id, 'backlog', 'sync')} />
+          <Column title="Long-running" count={tomorrowLongRunning.length} color="#6b21a8" tasks={tomorrowLongRunning} rawList={tomorrow} onDone={markDone} targetList="tomorrow" category="long-running" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onPromote={(id) => promoteTask(id, 'queue', 'long-running')} onDemote={(id) => demoteTask(id, 'backlog', 'long-running')} />
+          <Column title="Sync" count={tomorrowSync.length} color="#c2410c" tasks={tomorrowSync} rawList={tomorrow} onDone={markDone} targetList="tomorrow" category="sync" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onPromote={(id) => promoteTask(id, 'queue', 'sync')} onDemote={(id) => demoteTask(id, 'backlog', 'sync')} />
           <Column title="Monitoring" count={tomorrowMonitoring.length} color="#529cca" tasks={tomorrowMonitoring} rawList={tomorrow} onDone={markDone} targetList="tomorrow" category="monitoring" onDrop={moveTask} onAdd={addTask} onUpdateTask={updateTask} editingTaskId={editingTaskId} setEditingTaskId={setEditingTaskId} expandedTasks={expandedTasks} toggleExpanded={toggleExpanded} draggedTask={draggedTask} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onPromote={(id) => promoteTask(id, 'monitoring')} onDemote={(id) => demoteTask(id, 'backlog', 'monitoring')} />
         </div>
       )}

@@ -6,6 +6,7 @@ const HIDDEN_LISTS = ['now', 'monitoring', 'done', 'pulse']
 
 // Pinned lists: rendered at fixed positions, not in the normal section flow
 export const PINNED_LISTS = ['daily-goals']
+export const PINNED_LABELS: Record<string, string> = { 'daily-goals': 'Today' }
 
 // Extract env names from claude_code link labels (format: "claude (env4): ...")
 // and from focus_slot
@@ -60,7 +61,7 @@ export function processForStack(data: TodoData) {
   const claimedByNow = new Set<number>()
   for (const n of nowItems) {
     claimedByNow.add(n.id!)
-    for (const t of (data.lists.today || [])) {
+    for (const t of (data.lists.queue || [])) {
       if (t.parent_id === n.id) claimedByNow.add(t.id!)
     }
   }
@@ -79,14 +80,14 @@ export function processForStack(data: TodoData) {
   }
 
   // Process "now" items → today/waiting
-  if (stacks.today) {
+  if (stacks.queue) {
     for (const item of nowItems) {
-      const subtasks = (data.lists.today || []).filter(t => t.parent_id === item.id)
-      stacks.today.waiting.push({
+      const subtasks = (data.lists.queue || []).filter(t => t.parent_id === item.id)
+      stacks.queue.waiting.push({
         id: item.id, text: item.text, status: item.status,
         envs: extractEnvs(item), waitingReason: 'env', sourceList: 'now',
         children: subtasks.map(s => ({
-          id: s.id, text: s.text, status: s.status, sourceList: 'today',
+          id: s.id, text: s.text, status: s.status, sourceList: 'queue',
           children: [], childCount: 0, original: s, envs: extractEnvs(s),
           links: s.links || [], events: s.events || [],
         })),
@@ -100,7 +101,7 @@ export function processForStack(data: TodoData) {
   function processStackList(listName: string) {
     if (!stacks[listName]) return
     const items = data.lists[listName] || []
-    const filtered = listName === 'today'
+    const filtered = listName === 'queue'
       ? items.filter(t => !claimedByNow.has(t.id!))
       : items
     const processed = processList(filtered)
@@ -122,6 +123,7 @@ export function processForStack(data: TodoData) {
           links: c.links || [], events: c.events || [],
         })),
         childCount: item.childCount || childItems.length, original: item,
+        escalation: item.escalation || 0,
         links: item.links || [], events: item.events || [],
       })
     }
@@ -137,9 +139,9 @@ export function processForStack(data: TodoData) {
   }
 
   // Monitoring → today/waiting
-  if (stacks.today) {
+  if (stacks.queue) {
     for (const item of (data.lists.monitoring || [])) {
-      stacks.today.waiting.push({
+      stacks.queue.waiting.push({
         id: item.id, text: item.text, status: item.status,
         envs: extractEnvs(item), waitingReason: 'monitoring', sourceList: 'monitoring',
         children: [], childCount: 0, original: item,
