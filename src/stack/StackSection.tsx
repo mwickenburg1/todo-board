@@ -165,6 +165,9 @@ export function StackSection({ name, label, isFirstSection, pinned, subdued, act
                     if (!before) {
                       // Cursor at start → insert empty item BEFORE this one
                       if (onInsertItem) onInsertItem(name, column, '', id)
+                    } else if (!after.trim()) {
+                      // Cursor at end → just save the text, don't create empty item
+                      onUpdate(id, { text: before.trim() })
                     } else if (onSplitItem) {
                       // Atomic split: update current text + create new after it
                       onSplitItem(id, before.trim(), after.trim(), name, column)

@@ -55,13 +55,17 @@ body {
 .dark input::placeholder { color: #52525b !important; }
 .dark .placeholder\:text-gray-300::placeholder { color: #52525b !important; }
 
-/* Escalation strips — rose/coral for !!, warm gold for ! */
+/* Escalation strips — fuchsia for !!!, rose/coral for !!, warm gold for ! */
+.dark .bg-fuchsia-50 { background-color: rgb(162 28 175 / 0.12) !important; }
 .dark .bg-red-50 { background-color: rgb(159 18 57 / 0.12) !important; }
 .dark .bg-amber-50 { background-color: rgb(146 64 14 / 0.12) !important; }
+.dark .border-fuchsia-400\/60 { border-color: rgb(232 121 249 / 0.35) !important; }
 .dark .border-red-300\/60 { border-color: rgb(251 113 133 / 0.3) !important; }
 .dark .border-amber-300\/60 { border-color: rgb(253 186 116 / 0.3) !important; }
+.dark .text-fuchsia-800 { color: #f0abfc !important; }
 .dark .text-red-800 { color: #fda4af !important; }
 .dark .text-amber-800 { color: #fde68a !important; }
+.dark .hover\:bg-fuchsia-100:hover { background-color: rgb(162 28 175 / 0.2) !important; }
 .dark .hover\:bg-red-100:hover { background-color: rgb(159 18 57 / 0.2) !important; }
 .dark .hover\:bg-amber-100:hover { background-color: rgb(146 64 14 / 0.2) !important; }
 

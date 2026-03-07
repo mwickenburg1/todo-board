@@ -17,8 +17,38 @@ const ENV_SLOT_COLORS: Record<string, string> = {
   env8: 'bg-indigo-400',
 }
 
+const REMOTE_ENVS: Record<string, { host: string; space: number }> = {
+  env5: { host: 'dev-vm2', space: 5 },
+  env6: { host: 'dev-vm2', space: 6 },
+  env7: { host: 'dev-vm2', space: 7 },
+  env8: { host: 'dev-vm2', space: 8 },
+}
+
+function showToast(message: string, duration = 10000) {
+  const el = document.createElement('div')
+  el.textContent = message
+  Object.assign(el.style, {
+    position: 'fixed', top: '20px', left: '50%', transform: 'translateX(-50%)',
+    background: '#1e1e2e', color: '#cdd6f4', padding: '10px 20px',
+    borderRadius: '8px', fontSize: '13px', fontWeight: '500',
+    zIndex: '9999', boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+    transition: 'opacity 0.3s', opacity: '1',
+  })
+  document.body.appendChild(el)
+  setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 300) }, duration)
+}
+
 function openEnv(env: string, copyPrompt?: string) {
-  // Use vscode-remote URI — browser on Mac triggers Cursor to focus the SSH workspace
+  const remote = REMOTE_ENVS[env]
+  if (remote) {
+    if (copyPrompt) {
+      navigator.clipboard.writeText(copyPrompt).catch(() => {})
+      showToast(`⌃${remote.space} to switch · command copied`)
+    } else {
+      showToast(`⌃${remote.space} to switch`)
+    }
+    return
+  }
   const path = `/home/ubuntu/${env}.code-workspace`
   const host = import.meta.env.VITE_SSH_HOST || 'dev-vm'
   const uri = `cursor://vscode-remote/ssh-remote+${host}${path}`
@@ -336,9 +366,6 @@ export const StackLine = memo(function StackLine({ item, isBold, onDone, onUpdat
         {item.links.length > 0 && (
           <LinkBadges links={item.links} onRemove={onRemoveLink ? (idx) => onRemoveLink(item.id!, idx) : undefined} />
         )}
-        {item.events.length > 0 && (
-          <EventBadge events={item.events} />
-        )}
         <EnvSlots envs={item.envs} onOpenEnv={openEnv} />
         {item.waitingReason === 'in_progress' && item.envs.size === 0 && (
           <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
@@ -370,6 +397,13 @@ export const StackLine = memo(function StackLine({ item, isBold, onDone, onUpdat
                   }`}
                   title={item.escalation === 2 ? 'De-escalate' : 'Escalate !!'}
                 >!!</button>
+                <button
+                  onClick={() => onEscalate(item.id!, item.escalation || 0, 3)}
+                  className={`text-[13px] font-bold transition-colors leading-none ${
+                    item.escalation === 3 ? 'text-fuchsia-500' : 'text-gray-400 hover:text-fuchsia-500'
+                  }`}
+                  title={item.escalation === 3 ? 'De-escalate' : 'Escalate !!!'}
+                >!!!</button>
               </>
             )}
             {onAddLink && (

@@ -92,7 +92,7 @@ export async function analyzeDM(chId, person, messages) {
       .sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts))
       .map(m => `${m.who}: ${(m.text || '').slice(0, 200)}`)
       .join('\n')
-    const prompt = `Recent DM conversation with ${person}:\n\n${transcript}\n\nRespond in this exact format (no markdown):\nURGENT: <summary max 12 words>\nor\nNOT_URGENT: <summary max 12 words>\n\nURGENT = they're blocked, waiting on me right now, or it's time-sensitive.\nNOT_URGENT = FYI, casual, completed task, or no immediate action needed.`
+    const prompt = `Recent DM conversation with ${person} (I am "me"):\n\n${transcript}\n\nRespond in this exact format (no markdown):\nURGENT: <summary max 12 words>\nor\nNOT_URGENT: <summary max 12 words>\n\nURGENT = they're blocked, waiting on me right now, or it's time-sensitive. They asked a direct question or need a decision and can't proceed without me.\nNOT_URGENT = FYI, casual, sharing info/updates, completed task, questions that can wait, or no immediate action needed.\n\nIMPORTANT:\n- Only consider messages AFTER my last reply — everything before that is handled.\n- Classify based on the MOST urgent unaddressed topic only.\n- Sharing plans, updates, or logistics is NOT_URGENT unless they explicitly asked me to do something and are blocked.`
     return callSonnet(prompt)
   })
 }

@@ -28,7 +28,7 @@ export interface Todo {
   is_empty_slot?: boolean
   stored_category?: string
   in_progress_order?: number
-  escalation?: number  // 0=none, 1=!, 2=!!
+  escalation?: number  // 0=none, 1=!, 2=!!, 3=!!!
   links?: TaskLink[]
   events?: TaskEvent[]
 }

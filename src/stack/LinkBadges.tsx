@@ -112,7 +112,7 @@ function TypeBadge({ type, typeLinks, allLinks, onRemove }: {
       )}
       {showPopover && (
         <div
-          className="absolute right-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[200px] max-w-[320px]"
+          className="absolute right-0 top-full mt-1 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[200px] max-w-[320px]"
           onMouseEnter={handleEnter}
           onMouseLeave={handleLeave}
           onClick={e => e.stopPropagation()}
@@ -124,7 +124,7 @@ function TypeBadge({ type, typeLinks, allLinks, onRemove }: {
             return (
               <div
                 key={globalIdx}
-                className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 group/link"
+                className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 dark:hover:bg-gray-700 group/link"
               >
                 <span className="shrink-0 opacity-70"><LinkIcon size={12} /></span>
                 {url ? (
@@ -132,13 +132,95 @@ function TypeBadge({ type, typeLinks, allLinks, onRemove }: {
                     href={url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex-1 text-xs text-gray-700 hover:text-blue-600 truncate"
+                    className="flex-1 text-xs text-gray-700 dark:text-gray-300 hover:text-blue-600 truncate"
                   >
                     {link.label || link.ref}
                   </a>
                 ) : (
-                  <span className="flex-1 text-xs text-gray-600 truncate">{link.label || link.ref}</span>
+                  <span className="flex-1 text-xs text-gray-600 dark:text-gray-400 truncate">{link.label || link.ref}</span>
                 )}
+                {onRemove && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onRemove(globalIdx) }}
+                    className="text-[10px] text-gray-300 hover:text-red-400 opacity-0 group-hover/link:opacity-100 transition-opacity shrink-0"
+                    title="Remove link"
+                  >
+                    &#x2715;
+                  </button>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </span>
+  )
+}
+
+const ENV_NUM_COLORS: Record<string, string> = {
+  '1': 'text-blue-500 dark:text-blue-400',
+  '2': 'text-emerald-500 dark:text-emerald-400',
+  '3': 'text-amber-500 dark:text-amber-400',
+  '4': 'text-purple-500 dark:text-purple-400',
+  '5': 'text-rose-500 dark:text-rose-400',
+  '6': 'text-cyan-500 dark:text-cyan-400',
+  '7': 'text-orange-500 dark:text-orange-400',
+  '8': 'text-indigo-500 dark:text-indigo-400',
+}
+
+function ClaudeEnvBadges({ typeLinks, allLinks, onRemove }: {
+  typeLinks: TaskLink[]
+  allLinks: TaskLink[]
+  onRemove?: (idx: number) => void
+}) {
+  const [showPopover, setShowPopover] = useState(false)
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleEnter = () => {
+    if (hideTimer.current) clearTimeout(hideTimer.current)
+    setShowPopover(true)
+  }
+  const handleLeave = () => {
+    hideTimer.current = setTimeout(() => setShowPopover(false), 200)
+  }
+
+  // Extract unique env numbers from labels
+  const envNums = [...new Set(typeLinks.map(l => {
+    const m = (l.label || '').match(/env(\d+)/)
+    return m ? m[1] : null
+  }).filter(Boolean))] as string[]
+
+  return (
+    <span
+      className="relative inline-flex items-center gap-0 cursor-default"
+      onMouseEnter={handleEnter}
+      onMouseLeave={handleLeave}
+    >
+      {envNums.map(n => (
+        <span key={n} className={`text-[10px] font-bold leading-none ${ENV_NUM_COLORS[n] || 'text-gray-400'}`}>
+          {n}
+        </span>
+      ))}
+      {showPopover && (
+        <div
+          className="absolute right-0 top-full mt-1 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[200px] max-w-[320px]"
+          onMouseEnter={handleEnter}
+          onMouseLeave={handleLeave}
+          onClick={e => e.stopPropagation()}
+        >
+          {typeLinks.map((link) => {
+            const globalIdx = allLinks.indexOf(link)
+            const envMatch = (link.label || '').match(/env(\d+)/)
+            const envNum = envMatch ? envMatch[1] : null
+            return (
+              <div
+                key={globalIdx}
+                className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 dark:hover:bg-gray-700 group/link"
+              >
+                {envNum && (
+                  <span className={`text-[10px] font-bold shrink-0 ${ENV_NUM_COLORS[envNum] || 'text-gray-400'}`}>{envNum}</span>
+                )}
+                <span className="flex-1 text-xs text-gray-600 dark:text-gray-300 truncate">{link.label || link.ref}</span>
                 {onRemove && (
                   <button
                     onClick={(e) => { e.stopPropagation(); onRemove(globalIdx) }}
@@ -169,9 +251,13 @@ export function LinkBadges({ links, onRemove }: { links: TaskLink[], onRemove?: 
 
   return (
     <span className="inline-flex items-center gap-1 shrink-0">
-      {[...byType.entries()].map(([type, typeLinks]) => (
-        <TypeBadge key={type} type={type} typeLinks={typeLinks} allLinks={links} onRemove={onRemove} />
-      ))}
+      {[...byType.entries()].map(([type, typeLinks]) =>
+        type === 'claude_code' ? (
+          <ClaudeEnvBadges key={type} typeLinks={typeLinks} allLinks={links} onRemove={onRemove} />
+        ) : (
+          <TypeBadge key={type} type={type} typeLinks={typeLinks} allLinks={links} onRemove={onRemove} />
+        )
+      )}
     </span>
   )
 }
@@ -209,37 +295,37 @@ export function EventBadge({ events }: { events: TaskEvent[] }) {
       onMouseEnter={handleEnter}
       onMouseLeave={handleLeave}
     >
-      <span className="text-[9px] text-gray-400 bg-gray-50 rounded px-1">
+      <span className="text-[9px] text-gray-400 bg-gray-50 dark:bg-gray-800 rounded px-1">
         {events.length}
       </span>
       {showPopover && (
         <div
-          className="absolute right-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[240px] max-w-[360px]"
+          className="absolute right-0 top-full mt-1 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[240px] max-w-[360px]"
           onMouseEnter={handleEnter}
           onMouseLeave={handleLeave}
           onClick={e => e.stopPropagation()}
         >
-          <div className="px-3 py-1 text-[10px] text-gray-400 font-medium uppercase tracking-wider border-b border-gray-100">
+          <div className="px-3 py-1 text-[10px] text-gray-400 font-medium uppercase tracking-wider border-b border-gray-100 dark:border-gray-700">
             Recent activity
           </div>
           {recent.map((ev, i) => (
-            <div key={i} className="px-3 py-1.5 hover:bg-gray-50">
+            <div key={i} className="px-3 py-1.5 hover:bg-gray-50 dark:hover:bg-gray-700">
               <div className="flex items-center gap-1.5">
                 {linkLogos[ev.source] && (
                   <span className="shrink-0 opacity-60">
                     {linkLogos[ev.source].icon({ size: 10 })}
                   </span>
                 )}
-                <span className="text-[11px] text-gray-500 truncate">{ev.author}</span>
-                <span className="text-[10px] text-gray-300 ml-auto shrink-0">{timeAgo(ev.ts)}</span>
+                <span className="text-[11px] text-gray-500 dark:text-gray-400 truncate">{ev.author}</span>
+                <span className="text-[10px] text-gray-300 dark:text-gray-600 ml-auto shrink-0">{timeAgo(ev.ts)}</span>
               </div>
               {ev.summary && (
-                <div className="text-xs text-gray-600 mt-0.5 line-clamp-2 leading-snug">{ev.summary}</div>
+                <div className="text-xs text-gray-600 dark:text-gray-300 mt-0.5 line-clamp-2 leading-snug">{ev.summary}</div>
               )}
             </div>
           ))}
           {events.length > 10 && (
-            <div className="px-3 py-1 text-[10px] text-gray-300 text-center border-t border-gray-100">
+            <div className="px-3 py-1 text-[10px] text-gray-300 dark:text-gray-600 text-center border-t border-gray-100 dark:border-gray-700">
               +{events.length - 10} older
             </div>
           )}

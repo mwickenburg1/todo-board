@@ -55,10 +55,12 @@ async function updateDigest() {
       for (let i = 0; i < unrepliedDMs.length; i++) {
         const dm = unrepliedDMs[i]
         const raw = analyses[i] || ''
-        if (raw.startsWith('URGENT:')) {
-          urgent.push({ person: dm.person, summary: raw.slice(7).trim() })
-        } else if (raw.startsWith('NOT_URGENT:')) {
+        const urgentMatch = raw.match(/URGENT:\s*(.+)/m)
+        const notUrgentMatch = raw.match(/NOT_URGENT:\s*(.+)/m)
+        if (notUrgentMatch) {
           notUrgent.push(dm.person)
+        } else if (urgentMatch) {
+          urgent.push({ person: dm.person, summary: urgentMatch[1].trim() })
         } else {
           urgent.push({ person: dm.person, summary: raw || dm.lastMsg })
         }
@@ -127,8 +129,8 @@ async function updateDigest() {
       const analysis = await analyzeCrashes(crashes.taggedMsgs)
       const fallback = `${crashes.tagged} alert${crashes.tagged > 1 ? 's' : ''} tagging you`
       const text = analysis ? `#crashes-v2: ${analysis}` : `#crashes-v2: ${fallback}`
-      const noWorry = analysis && /don.t worry|no worry|not worry|normal range|within.*(baseline|range)|no concern/i.test(analysis)
-      items.push({ text, context: 'slack-crashes', priority: noWorry ? 0 : 2 })
+      const shouldWorry = analysis && /worry|concern|spike|degrad|investig|alert|critical|elevated|abnormal|outage/i.test(analysis) && !/no.{0,5}worry|not.{0,5}worry|don.t.{0,5}worry|nothing.{0,5}worry|no.{0,5}concern|not.{0,5}concern|normal/i.test(analysis)
+      items.push({ text, context: 'slack-crashes', priority: shouldWorry ? 2 : 0 })
     }
 
     // Update pulse list
@@ -157,6 +159,13 @@ async function updateDigest() {
 }
 
 // --- Public API ---
+
+export function resetAck() {
+  ackedEpoch = 0
+  clearAnalysisCache()
+  console.log(`[slack-digest] Ack reset — back to ${INITIAL_LOOKBACK_HOURS}h lookback`)
+  setTimeout(updateDigest, 500)
+}
 
 export function acknowledgeDigest() {
   ackedEpoch = Math.floor(Date.now() / 1000)

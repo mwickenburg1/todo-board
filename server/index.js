@@ -10,7 +10,10 @@ import todosRouter from './routes/todos.js'
 import listsRouter from './routes/lists.js'
 import eventsRouter from './routes/events.js'
 import envStatusRouter from './routes/env-status.js'
-import { startSlackDigest, acknowledgeDigest } from './slack-digest.js'
+import focusQueueRouter from './focus-queue.js'
+import { startSlackDigest, acknowledgeDigest, resetAck } from './slack-digest.js'
+import { markRoutineChecked, isRoutineCheckedToday, clearStaleChecks } from './routine-state.js'
+import { ROUTINE_ITEMS } from './routine-items.js'
 
 // Load .env from project root
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -41,16 +44,31 @@ function cursorEnv() {
 }
 
 // --- Open env workspace in Cursor ---
+const DEV_VM2_HOST = process.env.DEV_VM2_HOST || 'ubuntu@dev-vm2'
+const REMOTE_ENVS = new Set(['env5', 'env6', 'env7', 'env8'])
+
 app.post('/api/open-env', (req, res) => {
   const { env } = req.body
   if (!env || !/^env[1-8]$/.test(env)) {
     return res.status(400).json({ error: 'Invalid env, must be env1-env8' })
   }
   const workspace = `/home/ubuntu/${env}.code-workspace`
-  execFile('cursor', [workspace], { timeout: 5000, env: cursorEnv() }, (err) => {
-    if (err) return res.status(500).json({ error: err.message })
-    res.json({ ok: true, env, workspace })
-  })
+  if (REMOTE_ENVS.has(env)) {
+    const remoteCmd = [
+      `CURSOR=$(ls -t ~/.cursor-server/cli/servers/Stable-*/server/bin/remote-cli/cursor 2>/dev/null | head -1)`,
+      `SOCK=$(cat ~/.cursor-ipc-socket 2>/dev/null || ls -t /run/user/1000/vscode-ipc-*.sock 2>/dev/null | head -1)`,
+      `VSCODE_IPC_HOOK_CLI="$SOCK" "$CURSOR" "${workspace}"`,
+    ].join(' && ')
+    execFile('ssh', [DEV_VM2_HOST, remoteCmd], { timeout: 10000 }, (err) => {
+      if (err) return res.status(500).json({ error: err.message })
+      res.json({ ok: true, env, workspace, remote: DEV_VM2_HOST })
+    })
+  } else {
+    execFile('cursor', [workspace], { timeout: 5000, env: cursorEnv() }, (err) => {
+      if (err) return res.status(500).json({ error: err.message })
+      res.json({ ok: true, env, workspace })
+    })
+  }
 })
 
 
@@ -116,12 +134,22 @@ app.post('/api/slack-digest/ack', (req, res) => {
   }
 })
 
+app.post('/api/slack-digest/reset-ack', (req, res) => {
+  try {
+    resetAck()
+    res.json({ success: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // --- Route modules ---
 
 app.use('/api/todos', todosRouter)
 app.use('/api/lists', listsRouter)
 app.use('/api/events', eventsRouter)
 app.use('/api/env-status', envStatusRouter)
+app.use('/api/focus', focusQueueRouter)
 
 // --- Pulse check timer ---
 // Repopulates the "pulse" list every 20 min with any missing check items.
@@ -137,20 +165,22 @@ const PULSE_ITEMS = [
   'Not on track 85-95 -> get on track',
   'Views organized, Hazeover at 85%, items on list -> tidy up',
   '15 breaths down-reg or breath hold -> reset',
+  'Grinding after 1pm? -> prep tomorrow, don\'t force today',
 ]
 
 // Daily energy blocks (EST). Each appears when its window starts.
+// Day runs 1pm-1pm: morning = today's execution, afternoon = tomorrow's prep.
 const TIME_BLOCKS = [
   { start: '07:45', end: '11:00', label: '7:45-11',
     text: 'Deep work - 100%, RPE 8/9 not 10. Leave "I could do 30 more mins". If I don\'t nail this, company drifts at 9m' },
   { start: '11:15', end: '12:30', label: '11:15-12:30',
     text: 'Important meetings - RPE 6/7' },
-  { start: '13:00', end: '15:00', label: '1-3 PM',
-    text: 'Trough -> MED / NSDR / Exercise' },
-  { start: '15:00', end: '17:00', label: '3-5 PM',
-    text: 'Second piece - RPE 5-6, wind down' },
+  { start: '13:00', end: '13:30', label: '1-1:30 PM',
+    text: 'Today is shipped. NSDR / walk. Reset.' },
+  { start: '13:30', end: '17:00', label: '1:30-5 PM',
+    text: 'Tomorrow mode: clear replies, review Claude outputs, write specs, prep sessions' },
   { start: '17:00', end: '17:30', label: '5-5:30 PM',
-    text: 'Wind down, disconnect at 5:30. RPE 2-3. Pick the 1 item for DW block tmrw' },
+    text: 'Lock the board. Tomorrow\'s #1 is specific + first step written. Close laptop.' },
 ]
 
 // All possible time-block texts (for cleanup)
@@ -246,36 +276,7 @@ function repopulatePulse() {
 // Items activate at specific EST times, must be explicitly checked off.
 // Reset daily. Checked items don't reappear until next day.
 
-const ROUTINE_ITEMS = [
-  { time: '06:15', text: 'Exercise done' },
-  { time: '06:15', text: 'Any urgent flags overnight?' },
-  { time: '08:15', text: 'At least 3 Claude instances launched with specs' },
-  { time: '11:00', text: '11am review: check board, review Claude outputs, relaunch/redirect' },
-  { time: '12:00', text: 'Pill day', day: 0 }, // Sunday only
-  { time: '14:00', text: '2pm review: check board, review Claude outputs, relaunch/redirect' },
-  { time: '16:30', text: '4:30 review: Claude outputs, course-correct' },
-  { time: '17:00', text: "Tomorrow's 4-8 tasks listed (even rough one-liners)" },
-  { time: '17:00', text: 'Top 4 ranked by leverage' },
-  { time: '17:00', text: "Calendar checked — tomorrow's fragmentation noted" },
-  { time: '17:30', text: 'Disconnected' },
-]
-
-// Track checked routine items per day: Map<text, 'YYYY-MM-DD'>
-// Persisted to disk so server restarts don't lose checked state
-const ROUTINE_CHECKED_PATH = resolve(process.env.HOME, 'todos-repo', '.routine-checked.json')
-let routineCheckedToday = new Map()
-try {
-  const saved = JSON.parse(readFileSync(ROUTINE_CHECKED_PATH, 'utf8'))
-  routineCheckedToday = new Map(Object.entries(saved))
-} catch {}
-
-function persistRoutineChecked() {
-  writeFileSync(ROUTINE_CHECKED_PATH, JSON.stringify(Object.fromEntries(routineCheckedToday)))
-}
-
-function estDateStr() {
-  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' })
-}
+// ROUTINE_ITEMS imported from ./routine-items.js
 
 function repopulateRoutine() {
   try {
@@ -283,21 +284,14 @@ function repopulateRoutine() {
     if (!data.lists.pulse) data.lists.pulse = []
     const now = estNow()
     const nowMins = now.getHours() * 60 + now.getMinutes()
-    const today = estDateStr()
     let changed = false
 
-    // Clear yesterday's checks
-    let cleared = false
-    for (const [text, date] of routineCheckedToday) {
-      if (date !== today) { routineCheckedToday.delete(text); cleared = true }
-    }
-    if (cleared) persistRoutineChecked()
+    clearStaleChecks()
 
     // Remove routine items from previous days (stale)
     const beforeLen = data.lists.pulse.length
     data.lists.pulse = data.lists.pulse.filter(t => {
       if (t.context !== 'routine') return true
-      // Keep if created today
       if (t.created) {
         const createdDate = new Date(t.created).toLocaleDateString('en-US', { timeZone: 'America/New_York' })
         const todayDate = now.toLocaleDateString('en-US', { timeZone: 'America/New_York' })
@@ -310,11 +304,12 @@ function repopulateRoutine() {
     const existing = new Set(data.lists.pulse.filter(t => t.context === 'routine').map(t => t.text))
 
     for (const item of ROUTINE_ITEMS) {
-      if (item.day !== undefined && now.getDay() !== item.day) continue // wrong day of week
+      if (item.day !== undefined && now.getDay() !== item.day) continue
+      if (item.skipDays?.includes(now.getDay())) continue
       const activateMins = timeToMinutes(item.time)
-      if (nowMins < activateMins) continue // not yet
-      if (existing.has(item.text)) continue // already in list
-      if (routineCheckedToday.get(item.text) === today) continue // checked off today
+      if (nowMins < activateMins) continue
+      if (existing.has(item.text)) continue
+      if (isRoutineCheckedToday(item.text)) continue
 
       data.lists.pulse.push(createTask(data, {
         text: item.text,
@@ -339,11 +334,7 @@ app.post('/api/routine/check', (req, res) => {
     const item = data.lists.pulse?.find(t => t.id === id && t.context === 'routine')
     if (!item) return res.status(404).json({ error: 'Not found' })
 
-    // Mark as checked for today and persist
-    routineCheckedToday.set(item.text, estDateStr())
-    persistRoutineChecked()
-
-    // Remove from pulse list
+    markRoutineChecked(item.text)
     data.lists.pulse = data.lists.pulse.filter(t => t.id !== id)
     saveData(data)
 

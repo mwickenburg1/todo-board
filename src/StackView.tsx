@@ -1,61 +1,18 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import type { DragEvent as ReactDragEvent } from 'react'
-import type { Todo, TodoData, StackItem, EnvStatusRemote } from './stack/types'
+import type { Todo, TodoData, StackItem } from './stack/types'
 import { processForStack, PINNED_LISTS, PINNED_LABELS } from './stack/data'
 import { DocumentLine } from './stack/InlineCapture'
 import { StackSection } from './stack/StackSection'
-import { EnvStatusBar } from './stack/EnvStatusBar'
 import { useTaskActions } from './stack/useTaskActions'
 import { useOptimisticActions } from './stack/useOptimisticActions'
 import { PulseBanner } from './stack/PulseBanner'
 import { RootGap } from './stack/RootGap'
-
-function EscalationStrip({ item, level, onDeescalate, onDone }: {
-  item: StackItem
-  level: number
-  onDeescalate: () => void
-  onDone: () => void
-}) {
-  const isDouble = level === 2
-  return (
-    <div className={`flex items-center gap-3 px-4 py-2.5 rounded-lg mb-2 ${
-      isDouble
-        ? 'bg-red-50 border border-red-300/60'
-        : 'bg-amber-50 border border-amber-300/60'
-    }`}>
-      <button
-        onClick={onDeescalate}
-        className={`text-xs font-bold shrink-0 px-1.5 py-0.5 rounded cursor-pointer select-none ${
-          isDouble
-            ? 'text-red-500 hover:bg-red-100'
-            : 'text-amber-500 hover:bg-amber-100'
-        }`}
-        title="De-escalate"
-      >
-        {isDouble ? '!!' : '!'}
-      </button>
-      <span className={`flex-1 text-sm font-medium truncate ${
-        isDouble ? 'text-red-800' : 'text-amber-800'
-      }`}>
-        {item.text}
-      </span>
-      <button
-        onClick={onDone}
-        className={`w-4 h-4 shrink-0 rounded-sm border transition-colors ${
-          isDouble
-            ? 'border-red-400 hover:bg-red-100'
-            : 'border-amber-400 hover:bg-amber-100'
-        }`}
-        title="Done"
-      />
-    </div>
-  )
-}
+import { FocusQueue } from './stack/FocusQueue'
 
 export default function StackView() {
   const [data, setData] = useState<TodoData | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [envStatusRemote, setEnvStatusRemote] = useState<Record<string, EnvStatusRemote>>({})
   const [collapsedStacks, setCollapsedStacks] = useState<Set<string>>(new Set(['done']))
   const [expandedItems, setExpandedItems] = useState<Set<number>>(new Set())
   const [draggedItem, setDraggedItem] = useState<StackItem | null>(null)
@@ -66,7 +23,6 @@ export default function StackView() {
   const [dark, setDark] = useState(() => localStorage.getItem('dark-mode') === 'true')
 
   const lastJsonRef = useRef('')
-  const lastEnvJsonRef = useRef('')
 
   const fetchData = useCallback(() => {
     const active = document.activeElement as HTMLInputElement
@@ -81,15 +37,6 @@ export default function StackView() {
         }
       })
       .catch(err => setError(err.message))
-    fetch('/api/env-status')
-      .then(res => res.text())
-      .then(text => {
-        if (text !== lastEnvJsonRef.current) {
-          lastEnvJsonRef.current = text
-          setEnvStatusRemote(JSON.parse(text))
-        }
-      })
-      .catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -178,6 +125,8 @@ export default function StackView() {
 
   const processed = useMemo(() => data ? processForStack(data) : null, [data])
 
+  // FocusQueue fetches its own data from /api/focus — no client-side computation needed
+
   // Sync dark class on mount (must be before early returns)
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
@@ -186,31 +135,8 @@ export default function StackView() {
   if (error) return <div className="p-8 text-red-500 text-sm">Error: {error}</div>
   if (!data || !processed) return <div className="p-8 text-gray-400 text-sm">Loading...</div>
 
-  const { stacks, stackNames, doneItems, envSlots } = processed
+  const { stacks, stackNames, doneItems } = processed
   const pulseItems = (data.lists.pulse || []).filter(t => t.id && t.status !== 'done')
-
-  // Cap Today: CC-linked items always show, max 4 others
-  const MAX_MANUAL_TODAY = 4
-  const capItems = (items: StackItem[]) => {
-    const ccLinked: StackItem[] = []
-    const manual: StackItem[] = []
-    for (const item of items) {
-      if (item.links.some(l => l.type === 'claude_code')) ccLinked.push(item)
-      else manual.push(item)
-    }
-    return [...ccLinked, ...manual.slice(0, MAX_MANUAL_TODAY)]
-  }
-
-  // Find escalated items across all stacks
-  const escalatedItems: { item: StackItem; level: number }[] = []
-  for (const [, stack] of Object.entries(stacks)) {
-    for (const item of [...stack.actionable, ...stack.waiting]) {
-      if (item.escalation && item.escalation > 0) {
-        escalatedItems.push({ item, level: item.escalation })
-      }
-    }
-  }
-  escalatedItems.sort((a, b) => b.level - a.level)
 
   const dismissPulse = async (id: number) => {
     setData(prev => {
@@ -232,28 +158,20 @@ export default function StackView() {
   return (
     <div className="min-h-screen bg-white pb-16">
       <div className="max-w-6xl mx-auto px-8 pt-8">
-        {/* Dark mode toggle */}
-        <div className="flex justify-end mb-2">
-          <button
-            onClick={toggleDark}
-            className="text-gray-400 hover:text-gray-600 transition-colors text-sm px-2 py-1 rounded hover:bg-gray-100"
-            title={dark ? 'Light mode' : 'Dark mode'}
-          >
-            {dark ? '\u2600' : '\u263E'}
-          </button>
-        </div>
+        {/* Focus Queue — display-only, fetches its own data from /api/focus */}
+        <FocusQueue />
 
         <PulseBanner items={pulseItems} onDismiss={dismissPulse} />
 
-        {/* Pinned "Today" section with escalation strips between header and columns */}
+        {/* Pinned "Today" section */}
         {PINNED_LISTS.filter(name => stacks[name]).map(name => (
           <StackSection
             key={name}
             name={name}
             label={data.section_labels?.[name] || PINNED_LABELS[name] || name}
             pinned
-            actionable={capItems(stacks[name]?.actionable || [])}
-            waiting={capItems(stacks[name]?.waiting || [])}
+            actionable={stacks[name]?.actionable || []}
+            waiting={stacks[name]?.waiting || []}
             collapsed={collapsedStacks.has(name)}
             onToggle={() => toggleStack(name)}
             onCapture={(text, column) => optimistic.capture(text, name, column)}
@@ -274,19 +192,6 @@ export default function StackView() {
             onRemoveLink={actions.removeLink}
             onMoveItem={(id, column, direction) => optimistic.moveItem(id, name, column, direction)}
             onEscalate={toggleEscalation}
-            headerExtra={escalatedItems.length > 0 ? (
-              <div className="mb-4">
-                {escalatedItems.map(({ item, level }) => (
-                  <EscalationStrip
-                    key={item.id}
-                    item={item}
-                    level={level}
-                    onDeescalate={() => item.id && toggleEscalation(item.id, level, level)}
-                    onDone={() => item.id && actions.markDone(item.id)}
-                  />
-                ))}
-              </div>
-            ) : null}
           />
         ))}
 
@@ -388,7 +293,6 @@ export default function StackView() {
         </div>
       </div>
 
-      <EnvStatusBar envSlots={envSlots} remoteStatus={envStatusRemote} />
     </div>
   )
 }
