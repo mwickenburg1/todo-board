@@ -1,4 +1,4 @@
-import type { Todo, TodoData, StackItem, EnvSlotInfo } from './types'
+import type { Todo, TodoData, StackItem, EnvSlotInfo, SnoozeInfo } from './types'
 import { statusToColumn } from '../shared/helpers'
 
 // Lists that are handled specially (not shown as toggle sections)
@@ -53,7 +53,9 @@ export function getStackNames(data: TodoData): string[] {
   return names
 }
 
-export function processForStack(data: TodoData) {
+export function processForStack(data: TodoData, snoozeMap?: Record<number, SnoozeInfo>) {
+  const snz = snoozeMap || {}
+  const getSnooze = (id: number | null) => id ? snz[id] : undefined
   const stackNames = getStackNames(data)
   const nowItems = (data.lists.now || []).filter(n => !n.is_empty_slot && n.id)
 
@@ -90,9 +92,11 @@ export function processForStack(data: TodoData) {
           id: s.id, text: s.text, status: s.status, sourceList: 'queue',
           children: [], childCount: 0, original: s, envs: extractEnvs(s),
           links: s.links || [], events: s.events || [],
+          snoozeInfo: getSnooze(s.id),
         })),
         childCount: subtasks.length, original: item,
         links: item.links || [], events: item.events || [],
+        snoozeInfo: getSnooze(item.id),
       })
     }
   }
@@ -121,10 +125,12 @@ export function processForStack(data: TodoData) {
           id: c.id, text: c.text, status: c.status, sourceList: listName,
           children: [], childCount: 0, original: c, envs: extractEnvs(c),
           links: c.links || [], events: c.events || [],
+          snoozeInfo: getSnooze(c.id),
         })),
         childCount: item.childCount || childItems.length, original: item,
         escalation: item.escalation || 0,
         links: item.links || [], events: item.events || [],
+        snoozeInfo: getSnooze(item.id),
       })
     }
   }
@@ -146,6 +152,7 @@ export function processForStack(data: TodoData) {
         envs: extractEnvs(item), waitingReason: 'monitoring', sourceList: 'monitoring',
         children: [], childCount: 0, original: item,
         links: item.links || [], events: item.events || [],
+        snoozeInfo: getSnooze(item.id),
       })
     }
   }
@@ -154,6 +161,7 @@ export function processForStack(data: TodoData) {
     id: item.id, text: item.text, status: item.status, envs: extractEnvs(item), sourceList: 'done',
     children: [], childCount: 0, original: item,
     links: item.links || [], events: item.events || [],
+    snoozeInfo: getSnooze(item.id),
   }))
 
   // Env slots

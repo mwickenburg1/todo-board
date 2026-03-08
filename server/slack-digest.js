@@ -5,14 +5,33 @@
  * All scanners use the ack-based window: only show activity since last ack.
  */
 
+import { readFileSync, writeFileSync } from 'fs'
+import { resolve } from 'path'
 import { readData, saveData, createTask } from './store.js'
 import { SLACK_TOKEN, INITIAL_LOOKBACK_HOURS } from './slack-api.js'
 import { analyzeCrashes, analyzeDM, analyzeThread, analyzeIncidentChannel, clearAnalysisCache } from './slack-llm.js'
 import { scanUnrepliedDMs, scanMentions, scanCrashes, scanThreadActivity, scanNewIncidents, readIncidentChannelMessages } from './slack-scanners.js'
 
-// --- Acknowledgment state ---
+// --- Acknowledgment state (persisted to disk) ---
 
-let ackedEpoch = 0  // 0 = never acked, use INITIAL_LOOKBACK_HOURS
+const ACK_PATH = resolve(process.env.HOME, 'todos-repo', '.slack-ack-state.json')
+
+let ackedEpoch = 0
+const dismissedSlackRefs = new Set()
+
+// Load from disk on startup
+try {
+  const saved = JSON.parse(readFileSync(ACK_PATH, 'utf8'))
+  if (saved.ackedEpoch) ackedEpoch = saved.ackedEpoch
+  if (saved.dismissed) for (const ref of saved.dismissed) dismissedSlackRefs.add(ref)
+} catch {}
+
+function persistAckState() {
+  writeFileSync(ACK_PATH, JSON.stringify({
+    ackedEpoch,
+    dismissed: [...dismissedSlackRefs],
+  }))
+}
 
 function estTimeStr(epoch) {
   return new Date(epoch * 1000).toLocaleString('en-US', {
@@ -57,16 +76,20 @@ async function updateDigest() {
         const raw = analyses[i] || ''
         const urgentMatch = raw.match(/URGENT:\s*(.+)/m)
         const notUrgentMatch = raw.match(/NOT_URGENT:\s*(.+)/m)
+        // Most recent 5 messages, reversed to chronological (oldest first)
+        const thread = (dm.context || []).slice(0, 5).reverse().map(m => ({
+          who: m.who, text: (m.text || '').slice(0, 200),
+        }))
         if (notUrgentMatch) {
           notUrgent.push(dm.person)
         } else if (urgentMatch) {
-          urgent.push({ person: dm.person, summary: urgentMatch[1].trim() })
+          urgent.push({ person: dm.person, summary: urgentMatch[1].trim(), thread, chId: dm.chId })
         } else {
-          urgent.push({ person: dm.person, summary: raw || dm.lastMsg })
+          urgent.push({ person: dm.person, summary: raw || dm.lastMsg, thread, chId: dm.chId })
         }
       }
       for (const u of urgent) {
-        items.push({ text: `${u.person}: ${u.summary}`, context: 'slack-dms', priority: 2 })
+        items.push({ text: `${u.person}: ${u.summary}`, slackThread: u.thread, slackRef: u.chId, context: 'slack-dms', priority: 2 })
       }
       if (notUrgent.length > 0) {
         items.push({ text: `DMs: ${notUrgent.join(', ')} — nothing urgent`, context: 'slack-dms', priority: 0 })
@@ -77,7 +100,8 @@ async function updateDigest() {
     if (mentions.length > 0) {
       const senders = [...new Set(mentions.map(m => m.sender))].slice(0, 3).join(', ')
       const extra = mentions.length > 3 ? ` +${mentions.length - 3}` : ''
-      items.push({ text: `@mentions: ${mentions.length} (${senders}${extra})`, context: 'slack-mentions', priority: 2 })
+      const rawText = mentions.slice(0, 5).map(m => `${m.sender} in ${m.channel}: ${m.text}`).join('\n')
+      items.push({ text: `@mentions: ${mentions.length} (${senders}${extra})`, rawText, context: 'slack-mentions', priority: 2 })
     }
 
     // Threads — LLM triage into ACTION_NEEDED / FYI
@@ -90,16 +114,21 @@ async function updateDigest() {
       for (let i = 0; i < threadActivity.length; i++) {
         const t = threadActivity[i]
         const raw = analyses[i] || ''
+        const thread = (t.context || []).slice(-5).map(m => ({
+          who: m.who, text: (m.text || '').slice(0, 200),
+        }))
+        // threadKey is "channelId:threadTs" — convert to "channelId/threadTs" for slack_thread link ref
+        const slackRef = t.threadKey ? t.threadKey.replace(':', '/') : null
         if (raw.startsWith('ACTION_NEEDED:')) {
-          actionNeeded.push({ channel: t.channel, from: t.from, summary: raw.slice(14).trim() })
+          actionNeeded.push({ channel: t.channel, from: t.from, summary: raw.slice(14).trim(), thread, slackRef })
         } else if (raw.startsWith('FYI:')) {
           fyi.push({ channel: t.channel, from: t.from })
         } else {
-          actionNeeded.push({ channel: t.channel, from: t.from, summary: raw || `${t.from} replied` })
+          actionNeeded.push({ channel: t.channel, from: t.from, summary: raw || `${t.from} replied`, thread, slackRef })
         }
       }
       for (const a of actionNeeded) {
-        items.push({ text: `#${a.channel}: ${a.summary}`, context: 'slack-threads', priority: 2 })
+        items.push({ text: `#${a.channel}: ${a.summary}`, slackThread: a.thread, slackRef: a.slackRef, context: 'slack-threads', priority: 2 })
       }
       if (fyi.length > 0) {
         const names = [...new Set(fyi.map(f => f.from))].join(', ')
@@ -133,6 +162,13 @@ async function updateDigest() {
       items.push({ text, context: 'slack-crashes', priority: shouldWorry ? 2 : 0 })
     }
 
+    // Filter out individually dismissed items
+    const filteredItems = items.filter(item => {
+      if (item.slackRef && dismissedSlackRefs.has(item.slackRef)) return false
+      if (dismissedSlackRefs.has(item.text)) return false
+      return true
+    })
+
     // Update pulse list
     const data = readData()
     if (!data.lists.pulse) data.lists.pulse = []
@@ -141,16 +177,16 @@ async function updateDigest() {
     data.lists.pulse = data.lists.pulse.filter(t => !t.context?.startsWith('slack-'))
 
     // Only add header + items if there's something to show
-    if (items.length > 0) {
-      items.unshift({ text: sinceLabel, context: 'slack-header', priority: -1 })
-      for (const item of items) {
+    if (filteredItems.length > 0) {
+      filteredItems.unshift({ text: sinceLabel, context: 'slack-header', priority: -1 })
+      for (const item of filteredItems) {
         data.lists.pulse.push(createTask(data, item))
       }
     }
 
     saveData(data)
-    const hasIssues = items.some(i => i.priority > 0)
-    console.log(`[slack-digest] ${hasIssues ? 'Issues found' : 'All clear'} (${sinceLabel}): ${items.filter(i => i.context !== 'slack-header').map(i => i.text).join(' | ') || 'nothing to report'}`)
+    const hasIssues = filteredItems.some(i => i.priority > 0)
+    console.log(`[slack-digest] ${hasIssues ? 'Issues found' : 'All clear'} (${sinceLabel}): ${filteredItems.filter(i => i.context !== 'slack-header').map(i => i.text).join(' | ') || 'nothing to report'}`)
   } catch (err) {
     console.error(`[slack-digest] Error:`, err.message)
   } finally {
@@ -160,8 +196,17 @@ async function updateDigest() {
 
 // --- Public API ---
 
+export function dismissSlackItem(slackRef, text) {
+  if (slackRef) dismissedSlackRefs.add(slackRef)
+  if (text) dismissedSlackRefs.add(text)
+  persistAckState()
+  console.log(`[slack-digest] Dismissed item: ${slackRef || text} (${dismissedSlackRefs.size} total)`)
+}
+
 export function resetAck() {
   ackedEpoch = 0
+  dismissedSlackRefs.clear()
+  persistAckState()
   clearAnalysisCache()
   console.log(`[slack-digest] Ack reset — back to ${INITIAL_LOOKBACK_HOURS}h lookback`)
   setTimeout(updateDigest, 500)
@@ -169,6 +214,8 @@ export function resetAck() {
 
 export function acknowledgeDigest() {
   ackedEpoch = Math.floor(Date.now() / 1000)
+  dismissedSlackRefs.clear()
+  persistAckState()
   clearAnalysisCache()
   console.log(`[slack-digest] Acknowledged at ${estTimeStr(ackedEpoch)}`)
 

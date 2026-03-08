@@ -1,10 +1,11 @@
 import { useState, useCallback } from 'react'
-import type { Todo } from './types'
+import type { Todo, SnoozeInfo } from './types'
 
 interface PulseBannerProps {
   items: Todo[]
   onDismiss: (id: number) => void
   excludeIds?: Set<number>
+  snoozeMap?: Record<number, SnoozeInfo>
 }
 
 // Returns 0-3 urgency level based on age since creation
@@ -32,7 +33,29 @@ const URGENCY_STYLES = [
   { text: 'text-red-700 dark:text-red-300 font-medium', dot: 'border-red-500 bg-red-200 dark:border-red-400 dark:bg-red-900/30', bg: 'bg-red-50/50 dark:bg-red-900/20' },
 ]
 
-function PulseItem({ item, fading, onDismiss }: { item: Todo; fading: boolean; onDismiss: () => void }) {
+function SnoozeLabel({ info }: { info: SnoozeInfo }) {
+  const d = new Date(info.until)
+  const now = new Date()
+  const ny = (dt: Date) => dt.toLocaleDateString('en-US', { timeZone: 'America/New_York' })
+  const sameDay = ny(d) === ny(now)
+  const timeStr = d.toLocaleTimeString('en-US', {
+    timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true,
+  })
+  const dateStr = d.toLocaleDateString('en-US', {
+    timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric',
+  })
+  const label = sameDay ? timeStr : dateStr
+  const icon = info.reason === 'reschedule' ? '\u2192' : '\u23F8'
+  return (
+    <span className="inline-flex items-center gap-0.5 text-[10px] text-amber-500/70 dark:text-amber-400/50 font-medium shrink-0 ml-auto"
+      title={`${info.reason === 'reschedule' ? 'Rescheduled' : 'Snoozed'} until ${d.toLocaleString('en-US', { timeZone: 'America/New_York' })}`}>
+      <span className="text-[9px]">{icon}</span>
+      {label}
+    </span>
+  )
+}
+
+function PulseItem({ item, fading, onDismiss, snoozeInfo }: { item: Todo; fading: boolean; onDismiss: () => void; snoozeInfo?: SnoozeInfo }) {
   const isBlock = item.context === 'time-block'
   const isNext = item.context === 'time-next'
   const isRoutine = item.context === 'routine'
@@ -89,6 +112,7 @@ function PulseItem({ item, fading, onDismiss }: { item: Todo; fading: boolean; o
       >
         <span className="w-3.5 h-3.5 rounded border-2 border-sky-400 dark:border-sky-500 shrink-0 group-hover:bg-sky-200 dark:group-hover:bg-sky-800 transition-colors" />
         {item.text}
+        {snoozeInfo && <SnoozeLabel info={snoozeInfo} />}
       </button>
     )
   }
@@ -123,11 +147,13 @@ function PulseItem({ item, fading, onDismiss }: { item: Todo; fading: boolean; o
     >
       <span className={`w-3 h-3 rounded-full border ${s.dot} shrink-0 transition-colors duration-1000`} />
       {item.text}
+      {snoozeInfo && <SnoozeLabel info={snoozeInfo} />}
     </button>
   )
 }
 
-export function PulseBanner({ items: rawItems, onDismiss, excludeIds }: PulseBannerProps) {
+export function PulseBanner({ items: rawItems, onDismiss, excludeIds, snoozeMap }: PulseBannerProps) {
+  const getSnooze = (id: number | null) => id && snoozeMap ? snoozeMap[id] : undefined
   const items = excludeIds?.size ? rawItems.filter(t => !t.id || !excludeIds.has(t.id)) : rawItems
   const [dismissing, setDismissing] = useState<Set<number>>(new Set())
 
@@ -183,7 +209,7 @@ export function PulseBanner({ items: rawItems, onDismiss, excludeIds }: PulseBan
           <div className="flex flex-col gap-0.5">
             {routineItems.map(item => (
               <PulseItem key={item.id} item={item} fading={item.id ? dismissing.has(item.id) : false}
-                onDismiss={() => item.id && handleRoutineCheck(item.id)} />
+                onDismiss={() => item.id && handleRoutineCheck(item.id)} snoozeInfo={getSnooze(item.id)} />
             ))}
           </div>
         </div>
@@ -208,7 +234,7 @@ export function PulseBanner({ items: rawItems, onDismiss, excludeIds }: PulseBan
           <div className="flex flex-col gap-0.5">
             {slackItems.map(item => (
               <PulseItem key={item.id} item={item} fading={item.id ? dismissing.has(item.id) : false}
-                onDismiss={() => item.id && handleDismiss(item.id)} />
+                onDismiss={() => item.id && handleDismiss(item.id)} snoozeInfo={getSnooze(item.id)} />
             ))}
           </div>
         </div>
@@ -223,17 +249,17 @@ export function PulseBanner({ items: rawItems, onDismiss, excludeIds }: PulseBan
           <div className="flex flex-col gap-0.5">
             {blockItems.map(item => (
               <PulseItem key={item.id} item={item} fading={item.id ? dismissing.has(item.id) : false}
-                onDismiss={() => item.id && handleDismiss(item.id)} />
+                onDismiss={() => item.id && handleDismiss(item.id)} snoozeInfo={getSnooze(item.id)} />
             ))}
             {blockItems.length > 0 && checkItems.length > 0 && <div className="h-1" />}
             {checkItems.map(item => (
               <PulseItem key={item.id} item={item} fading={item.id ? dismissing.has(item.id) : false}
-                onDismiss={() => item.id && handleDismiss(item.id)} />
+                onDismiss={() => item.id && handleDismiss(item.id)} snoozeInfo={getSnooze(item.id)} />
             ))}
             {nextItems.length > 0 && <div className="h-1" />}
             {nextItems.map(item => (
               <PulseItem key={item.id} item={item} fading={item.id ? dismissing.has(item.id) : false}
-                onDismiss={() => item.id && handleDismiss(item.id)} />
+                onDismiss={() => item.id && handleDismiss(item.id)} snoozeInfo={getSnooze(item.id)} />
             ))}
           </div>
         </div>

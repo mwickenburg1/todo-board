@@ -360,6 +360,28 @@ export const StackLine = memo(function StackLine({ item, isBold, onDone, onUpdat
 
       {/* Right-side annotations */}
       <span className="inline-flex items-center gap-1 shrink-0 ml-auto">
+        {item.snoozeInfo && (() => {
+          const d = new Date(item.snoozeInfo.until)
+          const now = new Date()
+          const ny = (dt: Date) => dt.toLocaleDateString('en-US', { timeZone: 'America/New_York' })
+          const sameDay = ny(d) === ny(now)
+          const timeStr = d.toLocaleTimeString('en-US', {
+            timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true,
+          })
+          const dateStr = d.toLocaleDateString('en-US', {
+            timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric',
+          })
+          const label = item.snoozeInfo.reason === 'reschedule'
+            ? (sameDay ? timeStr : dateStr)
+            : `${timeStr}`
+          const icon = item.snoozeInfo.reason === 'reschedule' ? '\u2192' : '\u23F8'
+          return (
+            <span className="inline-flex items-center gap-0.5 text-[10px] text-amber-500/70 dark:text-amber-400/50 font-medium shrink-0" title={`${item.snoozeInfo.reason === 'reschedule' ? 'Rescheduled' : 'Snoozed'} until ${d.toLocaleString('en-US', { timeZone: 'America/New_York' })}`}>
+              <span className="text-[9px]">{icon}</span>
+              {label}
+            </span>
+          )
+        })()}
         {item.childCount > 0 && (
           <span className="text-[10px] text-gray-400">{item.childCount}</span>
         )}

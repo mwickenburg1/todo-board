@@ -33,6 +33,11 @@ export interface Todo {
   events?: TaskEvent[]
 }
 
+export interface SnoozeInfo {
+  until: number   // epoch ms
+  reason: 'snooze' | 'reschedule'
+}
+
 export interface TodoData {
   lists: {
     now?: Todo[]
@@ -45,4 +50,5 @@ export interface TodoData {
   }
   stacks?: string[]
   section_labels?: Record<string, string>
+  snoozeMap?: Record<number, SnoozeInfo>
 }

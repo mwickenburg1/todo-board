@@ -123,7 +123,7 @@ export default function StackView() {
     }).then(() => fetchData()).catch(() => {})
   }, [fetchData, setData])
 
-  const processed = useMemo(() => data ? processForStack(data) : null, [data])
+  const processed = useMemo(() => data ? processForStack(data, data.snoozeMap) : null, [data])
 
   // FocusQueue fetches its own data from /api/focus — no client-side computation needed
 
@@ -161,7 +161,7 @@ export default function StackView() {
         {/* Focus Queue — display-only, fetches its own data from /api/focus */}
         <FocusQueue />
 
-        <PulseBanner items={pulseItems} onDismiss={dismissPulse} />
+        <PulseBanner items={pulseItems} onDismiss={dismissPulse} snoozeMap={data.snoozeMap} />
 
         {/* Pinned "Today" section */}
         {PINNED_LISTS.filter(name => stacks[name]).map(name => (

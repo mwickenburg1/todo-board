@@ -16,11 +16,12 @@
 
 import { Router } from 'express'
 import { readData, saveData, findTask, createTask } from './store.js'
-import { acknowledgeDigest } from './slack-digest.js'
-import { markRoutineChecked } from './routine-state.js'
+import { acknowledgeDigest, dismissSlackItem } from './slack-digest.js'
+import { markRoutineChecked, isRoutineCheckedToday } from './routine-state.js'
 import { ROUTINE_ITEMS } from './routine-items.js'
 import { snoozeItem, unsnooze, isSnoozed, getSnoozedIds, getSnoozeInfo } from './snooze-state.js'
 import { parseNaturalTime } from './time-parser.js'
+import { hasUnread } from './slack-extract.js'
 
 const router = Router()
 
@@ -32,6 +33,9 @@ function isSelfEvent(author) {
 
 // Promoted item: overrides queue ordering. Only one at a time.
 let promotedId = null
+
+// When set, inject a priority-sort view after creating a new item so user can position it.
+let pendingPrioritySort = false
 
 function computeFleet(data) {
   const envMap = {} // env label -> [{ id, text, list, status, hasClaudeLink }]
@@ -57,6 +61,11 @@ function computeFleet(data) {
     }
   }
 
+  // Sort tasks within each env: escalation descending, then list position (insertion order)
+  for (const tasks of Object.values(envMap)) {
+    tasks.sort((a, b) => (b.escalation || 0) - (a.escalation || 0))
+  }
+
   // Sort by env number, return as array
   return Object.entries(envMap)
     .sort(([a], [b]) => {
@@ -77,6 +86,8 @@ function computeQueue(data) {
     if (!p.context) continue
 
     if (p.context === 'routine') {
+      // Skip if already checked off today (defensive — repopulateRoutine should handle this)
+      if (isRoutineCheckedToday(p.text)) continue
       // Small bonus by position in ROUTINE_ITEMS so earlier routines rank higher
       const routineIdx = ROUTINE_ITEMS.findIndex(r => r.text === p.text)
       const posBonus = routineIdx >= 0 ? (ROUTINE_ITEMS.length - routineIdx) : 0
@@ -85,12 +96,14 @@ function computeQueue(data) {
       const emphasizedHotkeys = routine?.hotkeys
         ? (routine.hotkeys[dayOfWeek] || routine.hotkeys.default || ['done', 'reschedule'])
         : ['done', 'reschedule']
+      const kind = routine?.isFleet ? 'fleet' : routine?.isPrioritySort ? 'priority-sort' : 'pulse'
       const item = {
-        id: p.id, kind: routine?.isFleet ? 'fleet' : 'pulse',
+        id: p.id, kind,
         score: 10000 + posBonus, label: p.text,
         sublabel: routine?.sublabel, actionVerb: 'Routine',
         list: 'pulse', emphasizedHotkeys,
         _isFleet: !!routine?.isFleet,
+        _isPrioritySort: !!routine?.isPrioritySort,
       }
       items.push(item)
       continue
@@ -101,26 +114,29 @@ function computeQueue(data) {
     if (!p.context.startsWith('slack-') || p.priority <= 0) continue
 
     let score
-    if (p.context === 'slack-incidents') score = 7000
-    else if (p.context === 'slack-dms' || p.context === 'slack-mentions') score = 5000
+    if (p.context === 'slack-incidents') score = 9500
+    else if (p.context === 'slack-dms' || p.context === 'slack-mentions') score = 9200
     else if (p.context === 'slack-threads') score = 3000
     else if (p.context === 'slack-crashes') score = 1000
     else continue
 
-    slackItems.push({ id: p.id, score: score + (p.priority * 10), text: p.text, context: p.context })
+    slackItems.push({ id: p.id, score: score + (p.priority * 10), text: p.text, slackThread: p.slackThread, slackRef: p.slackRef, context: p.context })
   }
 
-  // Bundle all urgent Slack items into one card
-  if (slackItems.length > 0) {
-    slackItems.sort((a, b) => b.score - a.score)
-    const topSlack = slackItems[0]
-    const label = slackItems.length === 1
-      ? topSlack.text
-      : `${slackItems.length} Slack items — ${topSlack.text}`
+  // Each urgent Slack item is its own card
+  for (const s of slackItems) {
+    const colonIdx = s.text.indexOf(': ')
+    const from = colonIdx > 0 ? s.text.slice(0, colonIdx) : null
+    const summary = colonIdx > 0 ? s.text.slice(colonIdx + 2) : s.text
+    const verbMap = { 'slack-dms': 'DM', 'slack-mentions': 'Mention', 'slack-threads': 'Thread', 'slack-incidents': 'Incident', 'slack-crashes': 'Crashes' }
     items.push({
-      id: topSlack.id, kind: 'slack-bundle', score: topSlack.score,
-      label, actionVerb: 'Slack', list: 'pulse',
-      bundledIds: slackItems.map(s => s.id),
+      id: s.id, kind: 'slack', score: s.score,
+      label: summary,
+      actionVerb: verbMap[s.context] || 'Slack',
+      from, list: 'pulse',
+      emphasizedHotkeys: ['done', 'create task'],
+      slackThread: s.slackThread || null,
+      slackRef: s.slackRef || null,
     })
   }
 
@@ -148,10 +164,43 @@ function computeQueue(data) {
           }
         }
         const escalationBonus = t.escalation === 3 ? 3000 : t.escalation === 2 ? 2000 : 0
+        const claudeLinksForEvent = (t.links || [])
+          .map((l, idx) => ({ ...l, idx }))
+          .filter(l => l.type === 'claude_code')
+          .map(l => ({ label: l.label, ref: l.ref, idx: l.idx }))
         items.push({
           id: t.id, kind: 'task', score: 6000 + escalationBonus + posBonus,
           label: t.text, sublabel: env ? `Claude finished in ${env}` : 'Claude finished',
           actionVerb: 'Claude Code', list: listName,
+          env: t.env || null, claudeLinks: claudeLinksForEvent,
+        })
+        continue
+      }
+
+      // Collect slack context from links — include ref for URL building
+      const slackLinks = (t.links || []).filter(l => l.type === 'slack_thread')
+      const slackContext = slackLinks.length > 0 ? slackLinks.map(l => ({
+        label: l.label || l.ref,
+        ref: l.ref,
+      })) : null
+
+      // Collect claude_code links with their indices for unlink
+      const claudeLinks = (t.links || [])
+        .map((l, idx) => ({ ...l, idx }))
+        .filter(l => l.type === 'claude_code')
+        .map(l => ({ label: l.label, ref: l.ref, idx: l.idx }))
+
+      // Boost score if any linked Slack thread has unread messages
+      const slackUnreadBoost = slackLinks.some(l => hasUnread(l.ref)) ? 500 : 0
+
+      // Fire drills — above everything except incidents
+      if (t.isFireDrill) {
+        items.push({
+          id: t.id, kind: 'task', score: 9500 + posBonus + slackUnreadBoost,
+          label: t.text, sublabel: listName === 'daily-goals' ? undefined : listName,
+          actionVerb: 'Fire drill', list: listName,
+          isFireDrill: true,
+          slackContext, env: t.env || null, claudeLinks,
         })
         continue
       }
@@ -160,9 +209,10 @@ function computeQueue(data) {
       if (t.escalation && t.escalation > 0) {
         const base = t.escalation === 3 ? 9000 : t.escalation === 2 ? 8000 : 4000
         items.push({
-          id: t.id, kind: 'task', score: base + posBonus,
+          id: t.id, kind: 'task', score: base + posBonus + slackUnreadBoost,
           label: t.text, sublabel: listName === 'daily-goals' ? undefined : listName,
           actionVerb: 'Do', list: listName,
+          slackContext, env: t.env || null, claudeLinks,
         })
         continue
       }
@@ -170,9 +220,10 @@ function computeQueue(data) {
       // Regular daily-goals pending
       if (listName === 'daily-goals') {
         items.push({
-          id: t.id, kind: 'task', score: 2000 + posBonus,
+          id: t.id, kind: 'task', score: 2000 + posBonus + slackUnreadBoost,
           label: t.text,
           actionVerb: 'Do', list: listName,
+          slackContext, env: t.env || null, claudeLinks,
         })
       }
     }
@@ -186,13 +237,42 @@ function computeQueue(data) {
     fleetItem.label = 'Manage fleet'
   }
 
+  // --- Priority sort: inject all daily-goals tasks as flat list ---
+  const prioritySortItem = items.find(item => item._isPrioritySort)
+  if (prioritySortItem) {
+    const dailyGoals = (data.lists['daily-goals'] || [])
+      .filter(t => t.id && t.status === 'pending')
+      .map(t => ({
+        id: t.id, text: t.text, env: t.env || null,
+        escalation: t.escalation || 0, isFireDrill: !!t.isFireDrill,
+      }))
+    prioritySortItem.priorityTasks = dailyGoals
+    prioritySortItem.label = 'Set priorities'
+  }
+
+  // --- Pending priority sort: injected after creating a new item ---
+  if (pendingPrioritySort && !prioritySortItem) {
+    const dailyGoals = (data.lists['daily-goals'] || [])
+      .filter(t => t.id && t.status === 'pending')
+      .map(t => ({
+        id: t.id, text: t.text, env: t.env || null,
+        escalation: t.escalation || 0, isFireDrill: !!t.isFireDrill,
+      }))
+    items.push({
+      id: -1, kind: 'priority-sort', score: 15001,
+      label: 'Set priorities', actionVerb: 'Reorder',
+      list: 'pulse', emphasizedHotkeys: ['done'],
+      _isPrioritySort: true, priorityTasks: dailyGoals,
+    })
+  }
+
   // Filter snoozed items, sort by score
   const effective = items
     .filter(item => !isSnoozed(item.id) && item.score > 0)
     .sort((a, b) => b.score - a.score)
 
-  // If there's a promoted item, force it to position 0
-  if (promotedId) {
+  // If there's a promoted item, force it to position 0 (skip when priority sort is pending)
+  if (promotedId && !pendingPrioritySort) {
     const idx = effective.findIndex(item => item.id === promotedId)
     if (idx > 0) {
       const [item] = effective.splice(idx, 1)
@@ -205,7 +285,8 @@ function computeQueue(data) {
         if (task) {
           effective.unshift({
             id: task.id, kind: 'task', score: 15000,
-            label: task.text, actionVerb: 'Do', list: listName,
+            label: task.text, actionVerb: task.isFireDrill ? 'Fire drill' : 'Do', list: listName,
+            isFireDrill: !!task.isFireDrill,
           })
           break
         }
@@ -230,7 +311,10 @@ router.get('/', (req, res) => {
       top.rescheduledUntilMs = snoozeInfo.until
       top.rescheduledReason = snoozeInfo.reason
     }
-    res.json({ empty: false, depth: queue.length, position: 1, top, snoozedIds: getSnoozedIds() })
+    // Use task's custom snooze duration if set, otherwise global default
+    const topTask = findTask(data, top.id)?.task
+    const effectiveSnooze = topTask?.snoozeMins || SNOOZE_MINUTES
+    res.json({ empty: false, depth: queue.length, position: 1, top, snoozedIds: getSnoozedIds(), snoozeMinutes: effectiveSnooze })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -247,16 +331,22 @@ router.post('/done', (req, res) => {
     unsnooze(top.id)
     if (promotedId === top.id) promotedId = null
 
-    if (top.kind === 'slack-bundle') {
-      acknowledgeDigest()
-      return res.json({ success: true, action: 'acked', item: top.label, remaining: queue.length - 1 })
-    }
-
-    if (top.kind === 'pulse') {
+    if (top.kind === 'slack' || top.kind === 'pulse' || top.kind === 'fleet' || top.kind === 'priority-sort') {
+      // Synthetic priority-sort (from item creation) — just clear the flag
+      if (top.id === -1 && top.kind === 'priority-sort') {
+        pendingPrioritySort = false
+        promotedId = null
+        return res.json({ success: true, action: 'dismissed', item: top.label, remaining: queue.length - 1 })
+      }
       // Find the pulse item to check if it's a routine
       const pulseItem = (data.lists.pulse || []).find(t => t.id === top.id)
       if (pulseItem?.context === 'routine') {
         markRoutineChecked(pulseItem.text)
+        console.log(`[focus] Routine checked off: "${pulseItem.text}"`)
+      }
+      // Individually dismiss slack items so digest doesn't re-add them
+      if (top.kind === 'slack' && pulseItem) {
+        dismissSlackItem(pulseItem.slackRef, pulseItem.text)
       }
       data.lists.pulse = (data.lists.pulse || []).filter(t => t.id !== top.id)
       saveData(data)
@@ -293,14 +383,18 @@ router.post('/wait', (req, res) => {
     unsnooze(top.id)
     if (promotedId === top.id) promotedId = null
 
-    if (top.kind === 'slack-bundle' || top.kind === 'pulse') {
-      // Pulse/slack items → just dismiss (can't "wait" on these)
-      if (top.kind === 'slack-bundle') {
-        acknowledgeDigest()
-      } else {
-        data.lists.pulse = (data.lists.pulse || []).filter(t => t.id !== top.id)
-        saveData(data)
+    if (top.kind === 'slack' || top.kind === 'pulse' || top.kind === 'fleet' || top.kind === 'priority-sort') {
+      if (top.id === -1 && top.kind === 'priority-sort') {
+        pendingPrioritySort = false
+        promotedId = null
+        return res.json({ success: true, action: 'dismissed', item: top.label, remaining: queue.length - 1 })
       }
+      if (top.kind === 'slack') {
+        const pulseItem = (data.lists.pulse || []).find(t => t.id === top.id)
+        if (pulseItem) dismissSlackItem(pulseItem.slackRef, pulseItem.text)
+      }
+      data.lists.pulse = (data.lists.pulse || []).filter(t => t.id !== top.id)
+      saveData(data)
       return res.json({ success: true, action: 'dismissed', item: top.label, remaining: queue.length - 1 })
     }
 
@@ -317,30 +411,46 @@ router.post('/wait', (req, res) => {
   }
 })
 
-// POST /api/focus/snooze — hide top item for 30 minutes
+// POST /api/focus/snooze — hide item for N minutes (default 30)
 const SNOOZE_MINUTES = 30
 
 router.post('/snooze', (req, res) => {
   try {
+    const { id: targetId, minutes } = req.body || {}
+    const snoozeLen = minutes || SNOOZE_MINUTES
+
+    if (targetId) {
+      // Snooze a specific item by ID
+      if (promotedId === targetId) promotedId = null
+      const until = Date.now() + snoozeLen * 60 * 1000
+      snoozeItem(targetId, until, 'snooze')
+      return res.json({ success: true, action: 'snoozed', id: targetId, minutes: snoozeLen })
+    }
+
+    // Default: snooze the current top item
     const data = readData()
     const queue = computeQueue(data)
     if (queue.length === 0) return res.json({ success: false, reason: 'queue empty' })
 
     const top = queue[0]
     if (promotedId === top.id) promotedId = null
-    const until = Date.now() + SNOOZE_MINUTES * 60 * 1000
+    // Use task's custom snoozeMins if set, otherwise request minutes, otherwise default
+    const task = findTask(data, top.id)?.task
+    const effectiveMins = minutes || task?.snoozeMins || SNOOZE_MINUTES
+    const until = Date.now() + effectiveMins * 60 * 1000
     snoozeItem(top.id, until, 'snooze')
 
-    res.json({ success: true, action: 'snoozed', item: top.label, minutes: SNOOZE_MINUTES, remaining: queue.length - 1 })
+    res.json({ success: true, action: 'snoozed', item: top.label, minutes: effectiveMins, remaining: queue.length - 1 })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
 })
 
 // POST /api/focus/promote — override queue: pull item to top or create new
+// itemType: 'fire-drill' | 'today' | 'backlog' (default: 'today')
 router.post('/promote', (req, res) => {
   try {
-    const { id, text } = req.body
+    const { id, text, itemType, snoozeMins } = req.body
 
     if (id) {
       promotedId = id
@@ -350,12 +460,20 @@ router.post('/promote', (req, res) => {
 
     if (text) {
       const data = readData()
-      const newTask = createTask(data, { text, priority: 1, status: 'pending' })
-      if (!data.lists['daily-goals']) data.lists['daily-goals'] = []
-      data.lists['daily-goals'].unshift(newTask)
+      const list = itemType === 'backlog' ? 'backlog' : 'daily-goals'
+      const overrides = { text, priority: 1, status: 'pending' }
+      if (itemType === 'fire-drill') {
+        overrides.isFireDrill = true
+        overrides.escalation = 3
+        if (snoozeMins) overrides.snoozeMins = snoozeMins
+      }
+      const newTask = createTask(data, overrides)
+      if (!data.lists[list]) data.lists[list] = []
+      data.lists[list].unshift(newTask)
       saveData(data)
       promotedId = newTask.id
-      return res.json({ success: true, promoted: newTask.id, created: true })
+      if (list !== 'backlog') pendingPrioritySort = true
+      return res.json({ success: true, promoted: newTask.id, created: true, itemType })
     }
 
     return res.status(400).json({ error: 'id or text required' })

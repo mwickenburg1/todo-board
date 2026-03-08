@@ -1,6 +1,6 @@
 // Re-export shared types used across both board and stack views
-export type { TaskLink, TaskEvent, Todo, TodoData } from '../shared/types'
-import type { Todo, TaskLink, TaskEvent } from '../shared/types'
+export type { TaskLink, TaskEvent, Todo, TodoData, SnoozeInfo } from '../shared/types'
+import type { Todo, TaskLink, TaskEvent, SnoozeInfo } from '../shared/types'
 
 export interface StackItem {
   id: number | null
@@ -16,6 +16,7 @@ export interface StackItem {
   escalation?: number
   links: TaskLink[]
   events: TaskEvent[]
+  snoozeInfo?: SnoozeInfo
 }
 
 export interface EnvSlotInfo {

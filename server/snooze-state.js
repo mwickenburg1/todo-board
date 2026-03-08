@@ -56,6 +56,24 @@ export function getSnoozeInfo(id) {
   return { until: entry.until, reason: entry.reason }
 }
 
+/** Get all active (non-expired) snooze entries as { [id]: { until, reason } }. */
+export function getSnoozeMap() {
+  const now = Date.now()
+  const map = {}
+  let changed = false
+  for (const [id, entry] of snoozed) {
+    if (entry.expired) continue
+    if (now >= entry.until) {
+      entry.expired = true
+      changed = true
+      continue
+    }
+    map[id] = { until: entry.until, reason: entry.reason }
+  }
+  if (changed) persist()
+  return map
+}
+
 export function getSnoozedIds() {
   const now = Date.now()
   const active = []

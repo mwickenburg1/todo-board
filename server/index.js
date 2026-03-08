@@ -12,7 +12,9 @@ import eventsRouter from './routes/events.js'
 import envStatusRouter from './routes/env-status.js'
 import focusQueueRouter from './focus-queue.js'
 import { startSlackDigest, acknowledgeDigest, resetAck } from './slack-digest.js'
+import { parseSlackUrl, extractThreadContext, fetchThreadMessages, setReadCursor, getAllReadCursors } from './slack-extract.js'
 import { markRoutineChecked, isRoutineCheckedToday, clearStaleChecks } from './routine-state.js'
+import { getSnoozeMap } from './snooze-state.js'
 import { ROUTINE_ITEMS } from './routine-items.js'
 
 // Load .env from project root
@@ -86,7 +88,9 @@ app.post('/api/undo', (req, res) => {
 
 app.get('/api/todos', (req, res) => {
   try {
-    res.json(readData())
+    const data = readData()
+    data.snoozeMap = getSnoozeMap()
+    res.json(data)
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -141,6 +145,43 @@ app.post('/api/slack-digest/reset-ack', (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
+})
+
+app.post('/api/slack-extract', async (req, res) => {
+  try {
+    const { url } = req.body || {}
+    const parsed = parseSlackUrl(url)
+    if (!parsed) return res.status(400).json({ error: 'Not a Slack URL' })
+    const context = await extractThreadContext(parsed.channel, parsed.ts)
+    res.json(context)
+  } catch (err) {
+    console.error('[slack-extract] error:', err.message)
+    res.status(502).json({ error: err.message })
+  }
+})
+
+app.get('/api/slack-thread/:channel/:ts', async (req, res) => {
+  try {
+    const { channel, ts } = req.params
+    const result = await fetchThreadMessages(channel, ts)
+    res.json(result)
+  } catch (err) {
+    console.error('[slack-thread] error:', err.message)
+    res.status(502).json({ error: err.message })
+  }
+})
+
+app.post('/api/slack-thread/:channel/:ts/read', (req, res) => {
+  const { channel, ts } = req.params
+  const { latestTs } = req.body || {}
+  if (latestTs) {
+    setReadCursor(`${channel}/${ts}`, latestTs)
+  }
+  res.json({ success: true })
+})
+
+app.get('/api/slack-cursors', (req, res) => {
+  res.json(getAllReadCursors())
 })
 
 // --- Route modules ---

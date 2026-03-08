@@ -14,7 +14,8 @@ export const ROUTINE_ITEMS = [
   },
   { time: '07:30', text: 'Morning journal — look away, dictate what\'s on your mind' },
   { time: '07:45', text: 'Manage fleet', isFleet: true },
-  { time: '12:00', text: 'Pill day', day: 0 }, // Sunday only
+  { time: '07:50', text: 'Set priorities', isPrioritySort: true },
+  { time: '15:00', text: 'Pill day', day: 0 }, // Sunday only, 3pm EST
   { time: '17:00', text: 'Calendar checked — morning protected?', skipDays: [6] },
   { time: '17:30', text: 'Disconnected' },
 ]
