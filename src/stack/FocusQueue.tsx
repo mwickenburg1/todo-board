@@ -72,10 +72,11 @@ function DeepWork() {
 
 const ALL_ENVS = ['env1', 'env2', 'env3', 'env4', 'env5', 'env6', 'env7', 'env8']
 
-function EnvControls({ taskId, env, label, onSetEnv }: {
+function EnvControls({ taskId, env, label, isLinked, onSetEnv }: {
   taskId: number
   env: string | null
   label: string
+  isLinked: boolean
   onSetEnv: (id: number, env: string | null) => void
 }) {
   const [showPicker, setShowPicker] = useState(false)
@@ -85,8 +86,13 @@ function EnvControls({ taskId, env, label, onSetEnv }: {
       {env ? (
         <>
           <button
-            onClick={() => openFleetEnv(env)}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md font-mono text-[14px] font-medium bg-gray-100 dark:bg-white/[0.06] text-gray-400 dark:text-gray-500 border border-gray-200/80 dark:border-white/[0.08] shadow-[0_1px_0_rgba(0,0,0,0.04)] dark:shadow-[0_1px_0_rgba(0,0,0,0.3)] cursor-pointer hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+            onClick={() => openFleetEnv(env, isLinked ? undefined : `/link ${label}`)}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md font-mono text-[14px] font-medium cursor-pointer transition-colors ${
+              isLinked
+                ? 'bg-gray-100 dark:bg-white/[0.06] text-gray-400 dark:text-gray-500 border border-gray-200/80 dark:border-white/[0.08] shadow-[0_1px_0_rgba(0,0,0,0.04)] dark:shadow-[0_1px_0_rgba(0,0,0,0.3)] hover:text-gray-600 dark:hover:text-gray-300'
+                : 'bg-transparent text-gray-300 dark:text-gray-600 border border-dashed border-gray-300/80 dark:border-gray-600/60 hover:text-gray-500 dark:hover:text-gray-400 hover:border-gray-400 dark:hover:border-gray-500'
+            }`}
+            title={isLinked ? 'Open environment' : 'Not linked — click to open env & copy /link'}
           >
             <span>&#x2303;</span>
             <span>{env.replace('env', '')}</span>
@@ -414,6 +420,7 @@ export function FocusQueue() {
         {/* Main text + env pill + alerts */}
         {(() => {
           const envKey = top!.env || null
+          const envLinked = (top!.claudeLinks && top!.claudeLinks.length > 0) || false
           const alerts = evaluateAlerts(top!)
           return (
             <>
@@ -433,12 +440,12 @@ export function FocusQueue() {
                   const colors = ENV_COLORS[envKey] || ENV_COLORS.env7
                   return (
                     <span
-                      onClick={() => openFleetEnv(envKey)}
-                      className={`
-                        inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg cursor-pointer hover:opacity-80 transition-opacity
-                        ${colors.bg} border ${colors.border}
-                        text-[15px] font-medium ${colors.text}
-                      `}
+                      onClick={() => openFleetEnv(envKey, envLinked ? undefined : `/link ${top!.label}`)}
+                      title={envLinked ? 'Open environment' : 'Not linked — click to open env & copy /link'}
+                      className={envLinked
+                        ? `inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg cursor-pointer hover:opacity-80 transition-opacity ${colors.bg} border ${colors.border} text-[15px] font-medium ${colors.text}`
+                        : `inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg cursor-pointer hover:opacity-80 transition-opacity bg-transparent border border-dashed ${colors.border} text-[15px] font-medium ${colors.text} opacity-50 hover:opacity-70`
+                      }
                     >
                       <span className="font-mono text-[16px]">&#x2303;</span>
                       <span className="font-mono">{envKey.replace('env', '')}</span>
@@ -546,6 +553,7 @@ export function FocusQueue() {
                     taskId={top!.id}
                     env={taskEnv}
                     label={top!.label}
+                    isLinked={!!(top!.claudeLinks && top!.claudeLinks.length > 0)}
                     onSetEnv={handleSetEnv}
                   />
                 )}
