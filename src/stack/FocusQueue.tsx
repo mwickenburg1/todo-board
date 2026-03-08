@@ -9,9 +9,14 @@ interface ClaudeLink {
   idx: number
 }
 
+interface FleetTask {
+  id: number; text: string; list: string; status: string; escalation: number;
+  hasClaudeLink: boolean; claudeLinks: ClaudeLink[];
+}
+
 interface FleetEnv {
   env: string
-  tasks: { id: number; text: string; list: string; status: string; hasClaudeLink: boolean; claudeLinks: ClaudeLink[] }[]
+  tasks: FleetTask[]
 }
 
 interface FocusResponse {
@@ -115,14 +120,24 @@ function openFleetEnv(env: string, copyPrompt?: string) {
   }
 }
 
-function EditableFleetItem({ task, env, onSave, onUnlink }: {
-  task: FleetEnv['tasks'][0]; env: string;
+const ESCALATION_COLORS = [
+  '', // 0 = none
+  'text-amber-500 dark:text-amber-400',   // !
+  'text-red-500 dark:text-red-400',        // !!
+  'text-fuchsia-500 dark:text-fuchsia-400', // !!!
+]
+
+function EditableFleetItem({ task, env, onSave, onUnlink, onDone, onEscalate }: {
+  task: FleetTask; env: string;
   onSave: (id: number, text: string) => void;
   onUnlink: (id: number, linkIdx: number) => void;
+  onDone: (id: number) => void;
+  onEscalate: (id: number, level: number) => void;
 }) {
   const [editing, setEditing] = useState(false)
   const [editText, setEditText] = useState(task.text)
   const [showPopover, setShowPopover] = useState(false)
+  const [hovered, setHovered] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -142,7 +157,6 @@ function EditableFleetItem({ task, env, onSave, onUnlink }: {
     if (task.hasClaudeLink) {
       setShowPopover(prev => !prev)
     } else {
-      // Not linked — copy /link command to clipboard
       const cmd = `/link ${task.text}`
       navigator.clipboard.writeText(cmd).catch(() => {})
       showToast(`/link copied — paste into Claude Code (${env})`)
@@ -157,9 +171,13 @@ function EditableFleetItem({ task, env, onSave, onUnlink }: {
   }
 
   return (
-    <div className={`flex items-center gap-3 py-2 px-2 -mx-2 rounded-lg transition-colors ${
-      editing ? 'bg-gray-100 dark:bg-white/[0.08]' : ''
-    }`}>
+    <div
+      className={`flex items-center gap-3 py-2 px-2 -mx-2 rounded-lg transition-colors ${
+        editing ? 'bg-gray-100 dark:bg-white/[0.08]' : ''
+      }`}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       {editing ? (
         <>
           <span className="w-[18px] h-[18px] rounded-[4px] border-[1.5px] border-gray-300 dark:border-gray-600 shrink-0" />
@@ -180,10 +198,38 @@ function EditableFleetItem({ task, env, onSave, onUnlink }: {
           className="flex-1 flex items-center gap-2 text-[21px] truncate cursor-pointer hover:bg-gray-50 dark:hover:bg-white/[0.04] rounded-md px-3 py-1.5 -mx-1 transition-colors"
           onClick={() => { setEditText(task.text); setEditing(true) }}
         >
-          <span className="w-[18px] h-[18px] rounded-[4px] border-[1.5px] border-gray-300 dark:border-gray-600 shrink-0" />
+          {/* Checkbox — click to mark done */}
+          <span
+            className="w-[18px] h-[18px] rounded-[4px] border-[1.5px] border-gray-300 dark:border-gray-600 shrink-0 hover:border-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 transition-colors cursor-pointer"
+            onClick={(e) => { e.stopPropagation(); onDone(task.id) }}
+            title="Mark done"
+          />
           <StyledTaskText text={task.text} />
         </span>
       )}
+      {/* Escalation buttons — inline, show on hover or when active */}
+      <span className="flex items-center gap-0.5 shrink-0">
+        {[1, 2, 3].map(level => {
+          const active = task.escalation === level
+          const visible = active || hovered
+          return (
+            <button
+              key={level}
+              onClick={(e) => { e.stopPropagation(); onEscalate(task.id, active ? 0 : level) }}
+              className={`px-1.5 py-0.5 rounded text-[19px] font-bold cursor-pointer transition-all ${
+                active
+                  ? `${ESCALATION_COLORS[level]}`
+                  : visible
+                    ? 'text-gray-300 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-400'
+                    : 'opacity-0 pointer-events-none'
+              }`}
+              title={`Escalation ${level}`}
+            >
+              {'!'.repeat(level)}
+            </button>
+          )
+        })}
+      </span>
       {/* Claude Code link button — separate hover zone */}
       <span className="relative shrink-0" onMouseLeave={handlePopoverLeave}>
         <button
@@ -240,7 +286,87 @@ function EditableFleetItem({ task, env, onSave, onUnlink }: {
   )
 }
 
-function FleetEnvCell({ n, tasks, onSave, onUnlink }: { n: number; tasks: FleetEnv['tasks']; onSave: (id: number, text: string) => void; onUnlink: (id: number, linkIdx: number) => void }) {
+function FleetAddInput({ env, onAdd }: { env: string; onAdd: (text: string, env: string) => void }) {
+  const [adding, setAdding] = useState(false)
+  const [text, setText] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (adding) inputRef.current?.focus()
+  }, [adding])
+
+  const submit = () => {
+    const trimmed = text.trim()
+    if (trimmed) onAdd(trimmed, env)
+    setText('')
+    setAdding(false)
+  }
+
+  if (!adding) {
+    return (
+      <button
+        onClick={() => setAdding(true)}
+        className="flex items-center gap-2 px-3 py-2 -mx-1 text-[21px] text-gray-200/60 dark:text-gray-700/50 hover:text-gray-400 dark:hover:text-gray-500 transition-colors cursor-pointer rounded-md hover:bg-gray-50 dark:hover:bg-white/[0.04]"
+      >
+        <span className="text-[24px] leading-none">+</span>
+        <span>add item</span>
+      </button>
+    )
+  }
+
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 -mx-1">
+      <span className="w-[18px] h-[18px] rounded-[4px] border-[1.5px] border-gray-300 dark:border-gray-600 shrink-0" />
+      <input
+        ref={inputRef}
+        value={text}
+        onChange={e => setText(e.target.value)}
+        onBlur={submit}
+        onKeyDown={e => {
+          if (e.key === 'Enter') { e.preventDefault(); submit() }
+          if (e.key === 'Escape') { setText(''); setAdding(false) }
+        }}
+        placeholder="New item..."
+        className="flex-1 text-[21px] bg-transparent outline-none text-gray-600 dark:text-gray-300 placeholder-gray-300 dark:placeholder-gray-600 min-w-0"
+      />
+    </div>
+  )
+}
+
+function FleetEmptyInput({ env, onAdd }: { env: string; onAdd: (text: string, env: string) => void }) {
+  const [text, setText] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const submit = () => {
+    const trimmed = text.trim()
+    if (trimmed) { onAdd(trimmed, env); setText('') }
+  }
+
+  return (
+    <div className="px-3 py-2.5">
+      <input
+        ref={inputRef}
+        value={text}
+        onChange={e => setText(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Enter') { e.preventDefault(); submit() }
+          if (e.key === 'Escape') { setText('') }
+        }}
+        placeholder="—"
+        className="w-full text-[21px] bg-transparent outline-none text-gray-600 dark:text-gray-300 placeholder-gray-300 dark:placeholder-gray-700 min-w-0"
+      />
+    </div>
+  )
+}
+
+function FleetEnvCell({ n, tasks, onSave, onUnlink, onDone, onEscalate, onAdd }: {
+  n: number; tasks: FleetTask[];
+  onSave: (id: number, text: string) => void;
+  onUnlink: (id: number, linkIdx: number) => void;
+  onDone: (id: number) => void;
+  onEscalate: (id: number, level: number) => void;
+  onAdd: (text: string, env: string) => void;
+}) {
   const env = `env${n}`
   const colors = ENV_COLORS[env] || ENV_COLORS.env7
   return (
@@ -257,23 +383,35 @@ function FleetEnvCell({ n, tasks, onSave, onUnlink }: { n: number; tasks: FleetE
       </span>
       <div className="flex-1 min-w-0">
         {tasks.length === 0 ? (
-          <div className="px-3 py-3.5">
-            <span className="text-[15px] text-gray-300 dark:text-gray-700">—</span>
-          </div>
-        ) : tasks.map(t => (
-          <EditableFleetItem key={t.id} task={t} env={env} onSave={onSave} onUnlink={onUnlink} />
-        ))}
+          <FleetEmptyInput env={env} onAdd={onAdd} />
+        ) : (
+          <>
+            {tasks.map(t => (
+              <EditableFleetItem key={t.id} task={t} env={env} onSave={onSave} onUnlink={onUnlink} onDone={onDone} onEscalate={onEscalate} />
+            ))}
+            {tasks.length < 3 && (
+              <FleetAddInput env={env} onAdd={onAdd} />
+            )}
+          </>
+        )}
       </div>
     </div>
   )
 }
 
-function FleetView({ fleet, onSave, onUnlink }: { fleet: FleetEnv[]; onSave: (id: number, text: string) => void; onUnlink: (id: number, linkIdx: number) => void }) {
+function FleetView({ fleet, onSave, onUnlink, onDone, onEscalate, onAdd }: {
+  fleet: FleetEnv[];
+  onSave: (id: number, text: string) => void;
+  onUnlink: (id: number, linkIdx: number) => void;
+  onDone: (id: number) => void;
+  onEscalate: (id: number, level: number) => void;
+  onAdd: (text: string, env: string) => void;
+}) {
   const fleetMap = new Map(fleet.map(f => [f.env, f.tasks]))
   return (
     <div className="space-y-2 mt-4">
       {[1, 2, 3, 4, 5, 6, 7, 8].map(n => (
-        <FleetEnvCell key={n} n={n} tasks={fleetMap.get(`env${n}`) || []} onSave={onSave} onUnlink={onUnlink} />
+        <FleetEnvCell key={n} n={n} tasks={fleetMap.get(`env${n}`) || []} onSave={onSave} onUnlink={onUnlink} onDone={onDone} onEscalate={onEscalate} onAdd={onAdd} />
       ))}
     </div>
   )
@@ -387,6 +525,39 @@ export function FocusQueue() {
     }).catch(() => {})
   }, [fetchQueue])
 
+  const handleDone = useCallback((id: number) => {
+    fetch(`/api/todos/${id}/done`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }).then(() => {
+      lastJsonRef.current = ''
+      fetchQueue()
+    }).catch(() => {})
+  }, [fetchQueue])
+
+  const handleEscalate = useCallback((id: number, level: number) => {
+    fetch(`/api/todos/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ escalation: level }),
+    }).then(() => {
+      lastJsonRef.current = ''
+      fetchQueue()
+    }).catch(() => {})
+  }, [fetchQueue])
+
+  const handleAddFleetItem = useCallback((text: string, env: string) => {
+    fetch('/api/todos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, list: 'daily-goals', env }),
+    }).then(() => {
+      lastJsonRef.current = ''
+      fetchQueue()
+    }).catch(() => {})
+  }, [fetchQueue])
+
   const handleReschedule = useCallback(async (text: string, confirm?: boolean) => {
     const res = await fetch('/api/focus/reschedule', {
       method: 'POST',
@@ -491,7 +662,7 @@ export function FocusQueue() {
 
         {/* Fleet view */}
         {top!.kind === 'fleet' && top!.fleet && (
-          <FleetView fleet={top!.fleet} onSave={handleUpdateTask} onUnlink={handleUnlink} />
+          <FleetView fleet={top!.fleet} onSave={handleUpdateTask} onUnlink={handleUnlink} onDone={handleDone} onEscalate={handleEscalate} onAdd={handleAddFleetItem} />
         )}
 
         {/* Rescheduled indicator */}

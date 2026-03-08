@@ -71,11 +71,12 @@ router.post('/split', (req, res) => {
 // Add a new task
 router.post('/', (req, res) => {
   try {
-    const { text, list, priority = 2, parent_id, status = 'pending' } = req.body
+    const { text, list, priority = 2, parent_id, status = 'pending', env } = req.body
     if (!list) return res.status(400).json({ error: 'list is required' })
 
     const data = readData()
     const newTask = createTask(data, { text: text || '', priority, status, parent_id: parent_id || null })
+    if (env) newTask.env = env
 
     if (!data.lists[list]) data.lists[list] = []
     data.lists[list].push(newTask)

@@ -188,7 +188,22 @@ const ALL_BLOCK_TEXTS = new Set(TIME_BLOCKS.map(b => b.text))
 const NEXT_PREFIX = 'Next: '
 
 function estNow() {
-  return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }))
+  // Build a Date whose local fields (getHours, getDay, etc.) reflect EST/EDT.
+  // The toLocaleString round-trip approach can misparse near midnight,
+  // so we use Intl.DateTimeFormat for reliable field extraction.
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  })
+  const parts = Object.fromEntries(
+    fmt.formatToParts(new Date()).map(p => [p.type, p.value])
+  )
+  return new Date(
+    Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+    Number(parts.hour), Number(parts.minute), Number(parts.second)
+  )
 }
 
 function timeToMinutes(hhmm) {
@@ -236,10 +251,19 @@ function repopulatePulse() {
       }
     }
 
-    // --- Time blocks: rotate based on current EST time ---
-    const { current, next } = currentAndNextBlock()
+    // --- Time blocks: disabled — these meta-items are subsumed by the board's card routing ---
+    // Clean up any existing time-block items
+    const before = data.lists.pulse.length
+    data.lists.pulse = data.lists.pulse.filter(t => {
+      if (ALL_BLOCK_TEXTS.has(t.text)) return false
+      if (t.text.startsWith(NEXT_PREFIX)) return false
+      if (t.context === 'time-block' || t.context === 'time-next') return false
+      return true
+    })
+    if (data.lists.pulse.length !== before) changed = true
 
-    // Remove stale block items (not current block, not current next-preview)
+    /*
+    const { current, next } = currentAndNextBlock()
     const keepTexts = new Set()
     if (current) keepTexts.add(current.text)
     const nextText = next ? NEXT_PREFIX + next.label + ' - ' + next.text : null
@@ -253,15 +277,17 @@ function repopulatePulse() {
     })
     if (data.lists.pulse.length !== before) changed = true
 
-    // Add current block if active and not already present
     const nowTexts = new Set(data.lists.pulse.map(t => t.text))
     if (current && !nowTexts.has(current.text)) {
       data.lists.pulse.unshift(createTask(data, { text: current.text, priority: 1, context: 'time-block' }))
       changed = true
     }
+    */
 
-    // Add next-block preview if not already present
-    if (nextText && !nowTexts.has(nextText)) {
+    // Add next-block preview if not already present (disabled)
+    const nowTexts = new Set(data.lists.pulse.map(t => t.text))
+    const nextText = null
+    if (false && nextText && !nowTexts.has(nextText)) {
       data.lists.pulse.push(createTask(data, { text: nextText, priority: 1, context: 'time-next' }))
       changed = true
     }

@@ -50,6 +50,7 @@ function computeFleet(data) {
       envMap[env].push({
         id: t.id, text: t.text, list: listName,
         status: t.status || 'pending',
+        escalation: t.escalation || 0,
         hasClaudeLink: claudeLinks.length > 0,
         claudeLinks: claudeLinks.map(l => ({ label: l.label, ref: l.ref, idx: l.idx })),
       })
