@@ -233,7 +233,7 @@ router.post('/:id/move', (req, res) => {
 router.patch('/:id', (req, res) => {
   try {
     const id = parseInt(req.params.id)
-    const { text, context, status, in_progress_order, escalation } = req.body
+    const { text, context, status, in_progress_order, escalation, env } = req.body
     const data = readData()
 
     const result = findTask(data, id)
@@ -268,6 +268,10 @@ router.patch('/:id', (req, res) => {
       task.status = status
     }
     if (in_progress_order !== undefined) task.in_progress_order = in_progress_order
+    if (env !== undefined) {
+      if (env === null || env === '') delete task.env
+      else task.env = env
+    }
     if (escalation !== undefined) {
       // Only one item per escalation level — clear others first
       if (escalation > 0) {

@@ -9,8 +9,9 @@
  *   POST /api/focus/done      → mark top item done (or dismiss pulse item)
  *   POST /api/focus/wait      → move top item to waiting
  *   POST /api/focus/snooze    → hide top item for 30 minutes
- *   POST /api/focus/promote   → override: pull item to top (or create + promote)
- *   GET  /api/focus/searchable → all items for Cmd+K search
+ *   POST /api/focus/promote    → override: pull item to top (or create + promote)
+ *   POST /api/focus/reschedule → LLM-parsed reschedule to a specific time
+ *   GET  /api/focus/searchable  → all items for Cmd+K search
  */
 
 import { Router } from 'express'
@@ -18,6 +19,8 @@ import { readData, saveData, findTask, createTask } from './store.js'
 import { acknowledgeDigest } from './slack-digest.js'
 import { markRoutineChecked } from './routine-state.js'
 import { ROUTINE_ITEMS } from './routine-items.js'
+import { snoozeItem, unsnooze, isSnoozed, getSnoozedIds, getSnoozeInfo } from './snooze-state.js'
+import { parseNaturalTime } from './time-parser.js'
 
 const router = Router()
 
@@ -27,11 +30,41 @@ function isSelfEvent(author) {
   return SELF_AUTHORS.some(s => lower.includes(s))
 }
 
-// In-memory snooze map: id → expiry timestamp (ms)
-const snoozedUntil = new Map()
-
 // Promoted item: overrides queue ordering. Only one at a time.
 let promotedId = null
+
+function computeFleet(data) {
+  const envMap = {} // env label -> [{ id, text, list, status, hasClaudeLink }]
+  // Only show tasks from the "today" list (daily-goals)
+  const allowedLists = new Set(['daily-goals'])
+
+  for (const [listName, tasks] of Object.entries(data.lists)) {
+    if (!tasks || !allowedLists.has(listName)) continue
+    for (const t of tasks) {
+      if (!t.id || !t.env) continue
+      const env = t.env
+      if (!envMap[env]) envMap[env] = []
+      const claudeLinks = (t.links || [])
+        .map((l, idx) => ({ ...l, idx }))
+        .filter(l => l.type === 'claude_code')
+      envMap[env].push({
+        id: t.id, text: t.text, list: listName,
+        status: t.status || 'pending',
+        hasClaudeLink: claudeLinks.length > 0,
+        claudeLinks: claudeLinks.map(l => ({ label: l.label, ref: l.ref, idx: l.idx })),
+      })
+    }
+  }
+
+  // Sort by env number, return as array
+  return Object.entries(envMap)
+    .sort(([a], [b]) => {
+      const na = parseInt(a.replace('env', ''))
+      const nb = parseInt(b.replace('env', ''))
+      return na - nb
+    })
+    .map(([env, tasks]) => ({ env, tasks }))
+}
 
 function computeQueue(data) {
   const items = []
@@ -43,13 +76,26 @@ function computeQueue(data) {
     if (!p.context) continue
 
     if (p.context === 'routine') {
-      items.push({ id: p.id, kind: 'pulse', score: 10000, label: p.text, actionVerb: 'Routine', list: 'pulse' })
+      // Small bonus by position in ROUTINE_ITEMS so earlier routines rank higher
+      const routineIdx = ROUTINE_ITEMS.findIndex(r => r.text === p.text)
+      const posBonus = routineIdx >= 0 ? (ROUTINE_ITEMS.length - routineIdx) : 0
+      const routine = routineIdx >= 0 ? ROUTINE_ITEMS[routineIdx] : null
+      const dayOfWeek = new Date().getDay()
+      const emphasizedHotkeys = routine?.hotkeys
+        ? (routine.hotkeys[dayOfWeek] || routine.hotkeys.default || ['done', 'reschedule'])
+        : ['done', 'reschedule']
+      const item = {
+        id: p.id, kind: routine?.isFleet ? 'fleet' : 'pulse',
+        score: 10000 + posBonus, label: p.text,
+        sublabel: routine?.sublabel, actionVerb: 'Routine',
+        list: 'pulse', emphasizedHotkeys,
+        _isFleet: !!routine?.isFleet,
+      }
+      items.push(item)
       continue
     }
-    if (p.context === 'time-block') {
-      items.push({ id: p.id, kind: 'pulse', score: 9500, label: p.text, actionVerb: 'Now', list: 'pulse' })
-      continue
-    }
+    // time-blocks disabled — skip them
+    if (p.context === 'time-block') continue
     if (p.context === 'slack-header' || p.context === 'time-next') continue
     if (!p.context.startsWith('slack-') || p.priority <= 0) continue
 
@@ -131,15 +177,17 @@ function computeQueue(data) {
     }
   }
 
+  // --- Fleet management: inject fleet data into routine fleet item if present ---
+  const fleetItem = items.find(item => item._isFleet)
+  if (fleetItem) {
+    const fleet = computeFleet(data)
+    fleetItem.fleet = fleet
+    fleetItem.label = 'Manage fleet'
+  }
+
   // Filter snoozed items, sort by score
-  const now = Date.now()
   const effective = items
-    .filter(item => {
-      const until = snoozedUntil.get(item.id)
-      if (until && now < until) return false
-      if (until && now >= until) snoozedUntil.delete(item.id)
-      return item.score > 0
-    })
+    .filter(item => !isSnoozed(item.id) && item.score > 0)
     .sort((a, b) => b.score - a.score)
 
   // If there's a promoted item, force it to position 0
@@ -176,10 +224,12 @@ router.get('/', (req, res) => {
       return res.json({ empty: true, depth: 0, message: 'Nothing needs you right now.' })
     }
     const top = queue[0]
-    const snoozedIds = [...snoozedUntil.entries()]
-      .filter(([, until]) => Date.now() < until)
-      .map(([id]) => id)
-    res.json({ empty: false, depth: queue.length, position: 1, top, snoozedIds })
+    const snoozeInfo = getSnoozeInfo(top.id)
+    if (snoozeInfo) {
+      top.rescheduledUntilMs = snoozeInfo.until
+      top.rescheduledReason = snoozeInfo.reason
+    }
+    res.json({ empty: false, depth: queue.length, position: 1, top, snoozedIds: getSnoozedIds() })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -193,7 +243,7 @@ router.post('/done', (req, res) => {
     if (queue.length === 0) return res.json({ success: false, reason: 'queue empty' })
 
     const top = queue[0]
-    snoozedUntil.delete(top.id)
+    unsnooze(top.id)
     if (promotedId === top.id) promotedId = null
 
     if (top.kind === 'slack-bundle') {
@@ -239,7 +289,7 @@ router.post('/wait', (req, res) => {
     if (queue.length === 0) return res.json({ success: false, reason: 'queue empty' })
 
     const top = queue[0]
-    snoozedUntil.delete(top.id)
+    unsnooze(top.id)
     if (promotedId === top.id) promotedId = null
 
     if (top.kind === 'slack-bundle' || top.kind === 'pulse') {
@@ -278,7 +328,7 @@ router.post('/snooze', (req, res) => {
     const top = queue[0]
     if (promotedId === top.id) promotedId = null
     const until = Date.now() + SNOOZE_MINUTES * 60 * 1000
-    snoozedUntil.set(top.id, until)
+    snoozeItem(top.id, until, 'snooze')
 
     res.json({ success: true, action: 'snoozed', item: top.label, minutes: SNOOZE_MINUTES, remaining: queue.length - 1 })
   } catch (err) {
@@ -293,7 +343,7 @@ router.post('/promote', (req, res) => {
 
     if (id) {
       promotedId = id
-      snoozedUntil.delete(id) // Unsnooze if snoozed
+      unsnooze(id) // Unsnooze if snoozed
       return res.json({ success: true, promoted: id })
     }
 
@@ -339,13 +389,77 @@ router.get('/searchable', (req, res) => {
   }
 })
 
+// POST /api/focus/reschedule — LLM-parsed reschedule to a specific time
+// Two-phase: { text } → preview, { text, confirm: true } → apply
+router.post('/reschedule', async (req, res) => {
+  try {
+    const { text, confirm } = req.body
+    if (!text) return res.status(400).json({ error: 'text is required' })
+
+    const data = readData()
+    const queue = computeQueue(data)
+    if (queue.length === 0) return res.json({ success: false, reason: 'queue empty' })
+
+    const top = queue[0]
+    const untilMs = await parseNaturalTime(text)
+    if (!untilMs) return res.json({ success: false, reason: 'could not parse time' })
+
+    const untilStr = new Date(untilMs).toLocaleString('en-US', {
+      timeZone: 'America/New_York',
+      weekday: 'short', month: 'short', day: 'numeric',
+      hour: 'numeric', minute: '2-digit', hour12: true,
+    })
+
+    if (!confirm) {
+      return res.json({ success: true, action: 'preview', item: top.label, until: untilStr, untilMs })
+    }
+
+    if (promotedId === top.id) promotedId = null
+    snoozeItem(top.id, untilMs, 'reschedule')
+
+    res.json({ success: true, action: 'rescheduled', item: top.label, until: untilStr })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/focus/fleet — current fleet status
+router.get('/fleet', (req, res) => {
+  try {
+    const data = readData()
+    const fleet = computeFleet(data)
+    res.json({ fleet })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // GET /api/focus/snoozed — list currently snoozed item IDs
 router.get('/snoozed', (req, res) => {
-  const now = Date.now()
-  const ids = [...snoozedUntil.entries()]
-    .filter(([, until]) => now < until)
-    .map(([id, until]) => ({ id, until }))
-  res.json({ snoozedIds: ids })
+  res.json({ snoozedIds: getSnoozedIds() })
 })
+
+// One-time migration: backfill task.env from claude_code link labels
+function migrateEnvFromLinks() {
+  const data = readData()
+  let migrated = 0
+  for (const [, tasks] of Object.entries(data.lists)) {
+    if (!tasks) continue
+    for (const t of tasks) {
+      if (t.env) continue // already has env
+      for (const l of (t.links || [])) {
+        if (l.type === 'claude_code' && l.label) {
+          const m = l.label.match(/env(\d+)/)
+          if (m) { t.env = m[0]; migrated++; break }
+        }
+      }
+    }
+  }
+  if (migrated > 0) {
+    saveData(data)
+    console.log(`[fleet] Migrated ${migrated} tasks: backfilled task.env from claude_code links`)
+  }
+}
+migrateEnvFromLinks()
 
 export default router
