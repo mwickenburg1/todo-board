@@ -72,9 +72,10 @@ function DeepWork() {
 
 const ALL_ENVS = ['env1', 'env2', 'env3', 'env4', 'env5', 'env6', 'env7', 'env8']
 
-function EnvControls({ taskId, env, onSetEnv }: {
+function EnvControls({ taskId, env, label, onSetEnv }: {
   taskId: number
   env: string | null
+  label: string
   onSetEnv: (id: number, env: string | null) => void
 }) {
   const [showPicker, setShowPicker] = useState(false)
@@ -119,7 +120,7 @@ function EnvControls({ taskId, env, onSetEnv }: {
             return (
               <button
                 key={e}
-                onClick={() => { onSetEnv(taskId, e); setShowPicker(false) }}
+                onClick={() => { onSetEnv(taskId, e); setShowPicker(false); openFleetEnv(e, `/link ${label}`) }}
                 className={`px-2.5 py-1 rounded-lg text-[13px] font-mono font-medium border cursor-pointer transition-colors ${
                   isActive
                     ? `${c.bg} ${c.border} ${c.text} ring-2 ring-offset-1 dark:ring-offset-gray-900`
@@ -544,6 +545,7 @@ export function FocusQueue() {
                   <EnvControls
                     taskId={top!.id}
                     env={taskEnv}
+                    label={top!.label}
                     onSetEnv={handleSetEnv}
                   />
                 )}
