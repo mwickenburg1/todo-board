@@ -164,6 +164,7 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
   const [unreadCount, setUnreadCount] = useState(0)
   const [activeThread, setActiveThread] = useState<{ threadTs: string; parentText: string; replies: ThreadReply[] } | null>(null)
   const [loadingThread, setLoadingThread] = useState(false)
+  const [hovered, setHovered] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const threadScrollRef = useRef<HTMLDivElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -281,8 +282,23 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
   const channelName = data?.channelName || null
   const colorMap = new Map<string, string>()
 
+  // Recency opacity: last 5 messages get gradient 0.35→1.0, older ones get 0.3
+  const recencyOpacity = (idx: number, total: number): number => {
+    const fromEnd = total - 1 - idx
+    if (fromEnd === 0) return 1.0
+    if (fromEnd === 1) return 0.85
+    if (fromEnd === 2) return 0.65
+    if (fromEnd === 3) return 0.50
+    if (fromEnd === 4) return 0.40
+    return 0.30
+  }
+
   return (
-    <div className="rounded-lg bg-gray-50/30 dark:bg-white/[0.01] border border-gray-200/30 dark:border-white/[0.04] overflow-hidden">
+    <div
+      className="rounded-lg bg-gray-50/30 dark:bg-white/[0.01] border border-gray-200/30 dark:border-white/[0.04] overflow-hidden"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       {/* Header — subtle, clickable to toggle */}
       <div className="flex items-center">
         <button
@@ -336,8 +352,10 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
             {error && (
               <p className="text-[12px] text-red-400/80 dark:text-red-400/60 py-2">Failed to load thread</p>
             )}
-            {messages && messages.map((msg, i) => (
-              <div key={i}>
+            {messages && messages.map((msg, i) => {
+              const fadeOpacity = hovered ? 1 : recencyOpacity(i, messages.length)
+              return (
+              <div key={i} style={{ opacity: fadeOpacity, transition: 'opacity 0.3s ease' }}>
                 {/* Date header */}
                 {shouldShowDateHeader(messages, i) && (
                   <div className="flex items-center gap-3 my-4 first:mt-0">
@@ -394,7 +412,8 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
                   </button>
                 )}
               </div>
-            ))}
+              )
+            })}
           </div>
 
           {/* Thread panel — separate rounded area below with gap */}
@@ -420,8 +439,9 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
                 )}
                 {activeThread.replies.map((reply, ri) => {
                   const isLastReply = ri === activeThread.replies.length - 1
+                  const replyFade = hovered ? 1 : recencyOpacity(ri, activeThread.replies.length)
                   return (
-                  <div key={ri}>
+                  <div key={ri} style={{ opacity: replyFade, transition: 'opacity 0.3s ease' }}>
                     {shouldShowDateHeader(activeThread.replies as ThreadMessage[], ri) && (
                       <div className="flex items-center gap-3 my-4">
                         <div className="flex-1 h-px bg-gray-200/60 dark:bg-white/[0.06]" />
