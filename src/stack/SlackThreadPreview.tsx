@@ -19,6 +19,7 @@ interface SlackThreadPreviewProps {
   ref_: string   // "channel/ts" format
   label: string  // "#channel-name" or similar
   onUnreadChange?: (ref: string, count: number) => void
+  defaultExpanded?: boolean
 }
 
 // Deterministic color per user name — muted, readable palette
@@ -93,10 +94,20 @@ function SlackIcon({ size = 14 }: { size?: number }) {
   )
 }
 
+function renderText(text: string) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/)
+  return parts.map((part, i) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={i} className="font-semibold">{part.slice(2, -2)}</strong>
+    }
+    return part
+  })
+}
+
 const POLL_INTERVAL = 60_000 // refresh thread every 60s
 
-export function SlackThreadPreview({ ref_, label, onUnreadChange }: SlackThreadPreviewProps) {
-  const [expanded, setExpanded] = useState(false)
+export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpanded = false }: SlackThreadPreviewProps) {
+  const [expanded, setExpanded] = useState(defaultExpanded)
   const [data, setData] = useState<ThreadData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(false)
@@ -104,14 +115,20 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange }: SlackThreadP
   const scrollRef = useRef<HTMLDivElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const [channel, ts] = ref_.split('/')
+  const parts = ref_.split('/')
+  const channel = parts[0]
+  const ts = parts[1] || null
+  const isChannelOnly = !ts
   const slackLink = channel && ts
     ? `https://slack.com/app_redirect?channel=${channel}&message_ts=${ts}`
-    : `https://slack.com/app_redirect?channel=${ref_}`
+    : `https://slack.com/app_redirect?channel=${channel}`
 
   const fetchThread = useCallback(() => {
-    if (!channel || !ts) return Promise.resolve()
-    return fetch(`/api/slack-thread/${channel}/${ts}`)
+    if (!channel) return Promise.resolve()
+    const url = isChannelOnly
+      ? `/api/slack-channel/${channel}`
+      : `/api/slack-thread/${channel}/${ts}`
+    return fetch(url)
       .then(res => res.ok ? res.json() : null)
       .then((result: ThreadData | null) => {
         if (result) {
@@ -122,7 +139,7 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange }: SlackThreadP
         return result
       })
       .catch(() => null)
-  }, [channel, ts, ref_, onUnreadChange])
+  }, [channel, ts, isChannelOnly, ref_, onUnreadChange])
 
   // Fetch on mount to get unread count for the badge
   useEffect(() => {
@@ -149,7 +166,10 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange }: SlackThreadP
     setExpanded(!expanded)
     if (!wasExpanded && data?.latestTs) {
       // Mark read
-      fetch(`/api/slack-thread/${channel}/${ts}/read`, {
+      const readUrl = isChannelOnly
+        ? `/api/slack-channel/${channel}/read`
+        : `/api/slack-thread/${channel}/${ts}/read`
+      fetch(readUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ latestTs: data.latestTs }),
@@ -252,7 +272,7 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange }: SlackThreadP
                   {msg.isMe ? 'You' : msg.who}
                 </span>
                 <span className="text-[15px] text-gray-600 dark:text-gray-300 leading-relaxed flex-1 min-w-0">
-                  {msg.text}
+                  {renderText(msg.text)}
                 </span>
                 <span className="text-[11px] text-gray-300 dark:text-gray-600 shrink-0 ml-4 tabular-nums">
                   {formatTime(msg.ts)}

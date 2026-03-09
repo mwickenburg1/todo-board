@@ -12,7 +12,7 @@ import eventsRouter from './routes/events.js'
 import envStatusRouter from './routes/env-status.js'
 import focusQueueRouter from './focus-queue.js'
 import { startSlackDigest, acknowledgeDigest, resetAck } from './slack-digest.js'
-import { parseSlackUrl, extractThreadContext, fetchThreadMessages, setReadCursor, getAllReadCursors } from './slack-extract.js'
+import { parseSlackUrl, extractThreadContext, fetchThreadMessages, fetchChannelMessages, setReadCursor, getAllReadCursors } from './slack-extract.js'
 import { markRoutineChecked, isRoutineCheckedToday, clearStaleChecks } from './routine-state.js'
 import { getSnoozeMap } from './snooze-state.js'
 import { ROUTINE_ITEMS } from './routine-items.js'
@@ -160,6 +160,17 @@ app.post('/api/slack-extract', async (req, res) => {
   }
 })
 
+app.get('/api/slack-channel/:channel', async (req, res) => {
+  try {
+    const { channel } = req.params
+    const result = await fetchChannelMessages(channel)
+    res.json(result)
+  } catch (err) {
+    console.error('[slack-channel] error:', err.message)
+    res.status(502).json({ error: err.message })
+  }
+})
+
 app.get('/api/slack-thread/:channel/:ts', async (req, res) => {
   try {
     const { channel, ts } = req.params
@@ -169,6 +180,15 @@ app.get('/api/slack-thread/:channel/:ts', async (req, res) => {
     console.error('[slack-thread] error:', err.message)
     res.status(502).json({ error: err.message })
   }
+})
+
+app.post('/api/slack-channel/:channel/read', (req, res) => {
+  const { channel } = req.params
+  const { latestTs } = req.body || {}
+  if (latestTs) {
+    setReadCursor(channel, latestTs)
+  }
+  res.json({ success: true })
 })
 
 app.post('/api/slack-thread/:channel/:ts/read', (req, res) => {

@@ -143,6 +143,24 @@ export async function extractThreadContext(channel, ts) {
 }
 
 /**
+ * Resolve <@USERID> mentions in text to display names.
+ * Collects all mentioned IDs, resolves any not already in nameMap, then replaces.
+ */
+async function resolveMentions(text, nameMap) {
+  const mentionRe = /<@(U[A-Z0-9]+)>/g
+  const ids = new Set()
+  let match
+  while ((match = mentionRe.exec(text)) !== null) {
+    ids.add(match[1])
+  }
+  // Resolve any IDs not already in nameMap
+  await Promise.all([...ids].filter(id => !nameMap[id]).map(async id => {
+    nameMap[id] = await resolveUser(id)
+  }))
+  return text.replace(/<@(U[A-Z0-9]+)>/g, (_, id) => `**@${nameMap[id] || id}**`)
+}
+
+/**
  * Fetch thread messages (no LLM). Returns array of { who, text, ts }.
  */
 export async function fetchThreadMessages(channel, ts) {
@@ -167,17 +185,61 @@ export async function fetchThreadMessages(channel, ts) {
 
   const ref = `${channel}/${ts}`
   const cursor = getReadCursor(ref)
-  const mapped = messages.map(m => ({
+  const mapped = await Promise.all(messages.map(async m => ({
     who: nameMap[m.user] || 'unknown',
     isMe: m.user === USER_ID,
-    text: (m.text || '').slice(0, 500),
+    text: await resolveMentions((m.text || '').slice(0, 500), nameMap),
     ts: m.ts,
     isUnread: cursor ? parseFloat(m.ts) > parseFloat(cursor) : false,
-  }))
+  })))
   const unreadCount = mapped.filter(m => m.isUnread).length
   const latestTs = messages.length > 0 ? messages[messages.length - 1].ts : null
 
   // Persist latest known ts so the focus queue can detect unreads without calling Slack
+  if (latestTs) setLatestTs(ref, latestTs)
+
+  return {
+    channelName,
+    messages: mapped,
+    unreadCount,
+    latestTs,
+  }
+}
+
+/**
+ * Fetch recent channel messages (for DMs where there's no thread ts).
+ */
+export async function fetchChannelMessages(channel) {
+  const histRes = await slack('conversations.history', { channel, limit: 20 })
+  if (!histRes.ok) {
+    throw new Error(`Failed to fetch channel history: ${histRes.error}`)
+  }
+
+  const messages = (histRes.messages || []).filter(m => !m.subtype).reverse()
+  const userIds = [...new Set(messages.map(m => m.user).filter(Boolean))]
+  const nameMap = {}
+  await Promise.all(userIds.map(async uid => {
+    nameMap[uid] = await resolveUser(uid)
+  }))
+
+  let channelName = channel
+  try {
+    const chanRes = await slack('conversations.info', { channel })
+    if (chanRes.ok) channelName = chanRes.channel.name
+  } catch {}
+
+  const ref = channel
+  const cursor = getReadCursor(ref)
+  const mapped = await Promise.all(messages.map(async m => ({
+    who: nameMap[m.user] || 'unknown',
+    isMe: m.user === USER_ID,
+    text: await resolveMentions((m.text || '').slice(0, 500), nameMap),
+    ts: m.ts,
+    isUnread: cursor ? parseFloat(m.ts) > parseFloat(cursor) : false,
+  })))
+  const unreadCount = mapped.filter(m => m.isUnread).length
+  const latestTs = messages.length > 0 ? messages[messages.length - 1].ts : null
+
   if (latestTs) setLatestTs(ref, latestTs)
 
   return {

@@ -188,7 +188,22 @@ export function FocusQueue() {
     setLastItemId(topId)
   }, [topId]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const triggerFleet = useCallback(() => {
+    fetch('/api/focus/trigger-fleet', { method: 'POST' }).then(() => {
+      lastJsonRef.current = ''
+      fetchQueue()
+    }).catch(() => {})
+  }, [fetchQueue])
+
+  const triggerPriority = useCallback(() => {
+    fetch('/api/focus/trigger-priority', { method: 'POST' }).then(() => {
+      lastJsonRef.current = ''
+      fetchQueue()
+    }).catch(() => {})
+  }, [fetchQueue])
+
   // Cmd+N (new item), Cmd+J (reschedule), Cmd+Shift+C (create task from Slack)
+  // Cmd+Shift+F (fleet), Cmd+P (priorities)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 'n') {
@@ -202,6 +217,14 @@ export function FocusQueue() {
         e.preventDefault()
         setNewItemOpen(false)
         setRescheduleOpen(prev => !prev)
+      }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault()
+        triggerFleet()
+      }
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 'p') {
+        e.preventDefault()
+        triggerPriority()
       }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
         e.preventDefault()
@@ -217,7 +240,7 @@ export function FocusQueue() {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [])
+  }, [triggerFleet, triggerPriority])
 
   const handlePromote = useCallback((id: number) => {
     fetch('/api/focus/promote', {
@@ -363,6 +386,30 @@ export function FocusQueue() {
   if (!data || data.empty) {
     return (
       <div className="relative min-h-[1450px]">
+        {/* Top-right buttons — empty state */}
+        <div className="absolute top-3 right-3 z-10 inline-flex items-center gap-1.5">
+          <button
+            onClick={triggerFleet}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/[0.04] border border-gray-200/80 dark:border-white/[0.08] text-[12px] font-medium text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:border-gray-300 dark:hover:border-white/[0.15] transition-colors cursor-pointer"
+          >
+            <span className="font-mono opacity-60">⌘⇧F</span>
+            <span>fleet</span>
+          </button>
+          <button
+            onClick={triggerPriority}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/[0.04] border border-gray-200/80 dark:border-white/[0.08] text-[12px] font-medium text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:border-gray-300 dark:hover:border-white/[0.15] transition-colors cursor-pointer"
+          >
+            <span className="font-mono opacity-60">⌘P</span>
+            <span>priorities</span>
+          </button>
+          <button
+            onClick={() => { setNewItemFireDrill(false); setNewItemPrefill(''); setNewItemOpen(true) }}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/[0.04] border border-gray-200/80 dark:border-white/[0.08] text-[12px] font-medium text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:border-gray-300 dark:hover:border-white/[0.15] transition-colors cursor-pointer"
+          >
+            <span className="font-mono opacity-60">⌘N</span>
+            <span>new item</span>
+          </button>
+        </div>
         <DeepWork />
         {overlayOpen && (
           <div className="absolute inset-0 z-40 bg-black/50 dark:bg-black/60 rounded-2xl" />
@@ -390,14 +437,30 @@ export function FocusQueue() {
 
   return (
     <div className="relative min-h-[1450px]">
-      {/* New item button — top right */}
-      <button
-        onClick={() => { setNewItemFireDrill(false); setNewItemPrefill(''); setNewItemOpen(true) }}
-        className="absolute top-3 right-3 z-10 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/[0.04] border border-gray-200/80 dark:border-white/[0.08] text-[12px] font-medium text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:border-gray-300 dark:hover:border-white/[0.15] transition-colors cursor-pointer"
-      >
-        <span className="font-mono opacity-60">⌘N</span>
-        <span>new item</span>
-      </button>
+      {/* Top-right buttons: fleet, priorities, new item */}
+      <div className="absolute top-3 right-3 z-10 inline-flex items-center gap-1.5">
+        <button
+          onClick={triggerFleet}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/[0.04] border border-gray-200/80 dark:border-white/[0.08] text-[12px] font-medium text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:border-gray-300 dark:hover:border-white/[0.15] transition-colors cursor-pointer opacity-50 hover:opacity-100"
+        >
+          <span className="font-mono opacity-60">⌘⇧F</span>
+          <span>fleet</span>
+        </button>
+        <button
+          onClick={triggerPriority}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/[0.04] border border-gray-200/80 dark:border-white/[0.08] text-[12px] font-medium text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:border-gray-300 dark:hover:border-white/[0.15] transition-colors cursor-pointer opacity-50 hover:opacity-100"
+        >
+          <span className="font-mono opacity-60">⌘P</span>
+          <span>priorities</span>
+        </button>
+        <button
+          onClick={() => { setNewItemFireDrill(false); setNewItemPrefill(''); setNewItemOpen(true) }}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/[0.04] border border-gray-200/80 dark:border-white/[0.08] text-[12px] font-medium text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:border-gray-300 dark:hover:border-white/[0.15] transition-colors cursor-pointer"
+        >
+          <span className="font-mono opacity-60">⌘N</span>
+          <span>new item</span>
+        </button>
+      </div>
       <div className={`
         relative px-8 pt-8 pb-8 rounded-2xl ${top!.kind === 'fleet' || top!.kind === 'priority-sort' ? 'min-h-[700px]' : ''}
         bg-white dark:bg-[#1c1c1e]
@@ -462,23 +525,10 @@ export function FocusQueue() {
           )
         })()}
 
-        {/* Slack thread — mini conversation snapshot */}
-        {top!.kind === 'slack' && top!.slackThread && top!.slackThread.length > 0 && (
-          <div className="mt-4 rounded-xl bg-gray-50 dark:bg-white/[0.03] border border-gray-100 dark:border-white/[0.06] px-4 py-3 space-y-2.5">
-            {top!.slackThread.map((msg, i) => (
-              <div key={i} className="flex gap-2.5 items-start">
-                <span className={`text-[13px] font-semibold shrink-0 mt-px ${
-                  msg.who === 'me'
-                    ? 'text-blue-500 dark:text-blue-400'
-                    : 'text-amber-600 dark:text-amber-400'
-                }`}>
-                  {msg.who === 'me' ? 'You' : msg.who}
-                </span>
-                <span className="text-[15px] text-gray-600 dark:text-gray-300 leading-relaxed">
-                  {msg.text}
-                </span>
-              </div>
-            ))}
+        {/* Slack thread — reuse SlackThreadPreview for proper author resolution + timestamps */}
+        {top!.kind === 'slack' && top!.slackRef && (
+          <div className="mt-4">
+            <SlackThreadPreview ref_={top!.slackRef} label={top!.from || 'Slack'} defaultExpanded />
           </div>
         )}
 

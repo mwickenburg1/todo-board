@@ -37,6 +37,9 @@ let promotedId = null
 // When set, inject a priority-sort view after creating a new item so user can position it.
 let pendingPrioritySort = false
 
+// When set, inject a fleet view on demand (independent of routine schedule).
+let pendingFleet = false
+
 function computeFleet(data) {
   const envMap = {} // env label -> [{ id, text, list, status, hasClaudeLink }]
   // Only show tasks from the "today" list (daily-goals)
@@ -140,10 +143,9 @@ function computeQueue(data) {
     })
   }
 
-  // --- Task items from actionable lists ---
-  const skipLists = new Set(['now', 'monitoring', 'done', 'pulse'])
+  // --- Task items from daily-goals only ---
   for (const [listName, tasks] of Object.entries(data.lists)) {
-    if (!tasks || skipLists.has(listName)) continue
+    if (listName !== 'daily-goals' || !tasks) continue
     const pending = tasks.filter(t => t.id && t.status === 'pending')
 
     for (let i = 0; i < pending.length; i++) {
@@ -266,6 +268,17 @@ function computeQueue(data) {
     })
   }
 
+  // --- On-demand fleet: triggered by hotkey independent of routine ---
+  if (pendingFleet && !fleetItem) {
+    const fleet = computeFleet(data)
+    items.push({
+      id: -2, kind: 'fleet', score: 15002,
+      label: 'Manage fleet', actionVerb: 'Fleet',
+      list: 'pulse', emphasizedHotkeys: ['done'],
+      _isFleet: true, fleet,
+    })
+  }
+
   // Filter snoozed items, sort by score
   const effective = items
     .filter(item => !isSnoozed(item.id) && item.score > 0)
@@ -332,10 +345,15 @@ router.post('/done', (req, res) => {
     if (promotedId === top.id) promotedId = null
 
     if (top.kind === 'slack' || top.kind === 'pulse' || top.kind === 'fleet' || top.kind === 'priority-sort') {
-      // Synthetic priority-sort (from item creation) — just clear the flag
+      // Synthetic priority-sort (from item creation or hotkey) — just clear the flag
       if (top.id === -1 && top.kind === 'priority-sort') {
         pendingPrioritySort = false
         promotedId = null
+        return res.json({ success: true, action: 'dismissed', item: top.label, remaining: queue.length - 1 })
+      }
+      // Synthetic fleet (from hotkey) — just clear the flag
+      if (top.id === -2 && top.kind === 'fleet') {
+        pendingFleet = false
         return res.json({ success: true, action: 'dismissed', item: top.label, remaining: queue.length - 1 })
       }
       // Find the pulse item to check if it's a routine
@@ -387,6 +405,10 @@ router.post('/wait', (req, res) => {
       if (top.id === -1 && top.kind === 'priority-sort') {
         pendingPrioritySort = false
         promotedId = null
+        return res.json({ success: true, action: 'dismissed', item: top.label, remaining: queue.length - 1 })
+      }
+      if (top.id === -2 && top.kind === 'fleet') {
+        pendingFleet = false
         return res.json({ success: true, action: 'dismissed', item: top.label, remaining: queue.length - 1 })
       }
       if (top.kind === 'slack') {
@@ -540,6 +562,18 @@ router.post('/reschedule', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
+})
+
+// POST /api/focus/trigger-fleet — toggle on-demand fleet view
+router.post('/trigger-fleet', (req, res) => {
+  pendingFleet = !pendingFleet
+  res.json({ success: true, active: pendingFleet })
+})
+
+// POST /api/focus/trigger-priority — toggle on-demand priority sort view
+router.post('/trigger-priority', (req, res) => {
+  pendingPrioritySort = !pendingPrioritySort
+  res.json({ success: true, active: pendingPrioritySort })
 })
 
 // GET /api/focus/fleet — current fleet status
