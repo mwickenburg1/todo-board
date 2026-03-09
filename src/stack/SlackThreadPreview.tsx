@@ -505,20 +505,21 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
                       setSending(false)
                     }
                   }}
-                  className="flex items-center gap-2"
+                  className="flex items-end gap-2"
                 >
-                  <input
-                    type="text"
+                  <textarea
                     value={replyText}
                     onChange={(e) => setReplyText(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }}
                     placeholder="Reply..."
-                    className="flex-1 text-[14px] bg-white dark:bg-white/[0.05] border border-gray-200/50 dark:border-white/[0.08] rounded-md px-3 py-2.5 text-gray-700 dark:text-gray-300 placeholder-gray-400/60 dark:placeholder-gray-500/40 focus:outline-none focus:border-blue-400/50 dark:focus:border-blue-500/30 transition-colors"
+                    rows={2}
+                    className="flex-1 text-[14px] bg-white dark:bg-white/[0.05] border border-gray-200/50 dark:border-white/[0.08] rounded-md px-3 py-2.5 text-gray-700 dark:text-gray-300 placeholder-gray-400/60 dark:placeholder-gray-500/40 focus:outline-none focus:border-blue-400/50 dark:focus:border-blue-500/30 transition-colors resize-none"
                     disabled={sending}
                   />
                   <button
                     type="submit"
                     disabled={!replyText.trim() || sending}
-                    className="text-[13px] font-medium text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 disabled:text-gray-300 dark:disabled:text-gray-600 disabled:cursor-default cursor-pointer px-2 py-1.5 transition-colors"
+                    className="text-[13px] font-medium text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 disabled:text-gray-300 dark:disabled:text-gray-600 disabled:cursor-default cursor-pointer px-2 py-2.5 transition-colors"
                   >
                     {sending ? '...' : 'Send'}
                   </button>
@@ -621,20 +622,21 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
                   setSending(false)
                 }
               }}
-              className="flex items-center gap-2"
+              className="flex items-end gap-2"
             >
-              <input
-                type="text"
+              <textarea
                 value={replyText}
                 onChange={(e) => setReplyText(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }}
                 placeholder="Reply in thread..."
-                className="flex-1 text-[14px] bg-white dark:bg-white/[0.05] border border-gray-200/50 dark:border-white/[0.08] rounded-md px-3 py-2.5 text-gray-700 dark:text-gray-300 placeholder-gray-400/60 dark:placeholder-gray-500/40 focus:outline-none focus:border-blue-400/50 dark:focus:border-blue-500/30 transition-colors"
+                rows={2}
+                className="flex-1 text-[14px] bg-white dark:bg-white/[0.05] border border-gray-200/50 dark:border-white/[0.08] rounded-md px-3 py-2.5 text-gray-700 dark:text-gray-300 placeholder-gray-400/60 dark:placeholder-gray-500/40 focus:outline-none focus:border-blue-400/50 dark:focus:border-blue-500/30 transition-colors resize-none"
                 disabled={sending}
               />
               <button
                 type="submit"
                 disabled={!replyText.trim() || sending}
-                className="text-[13px] font-medium text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 disabled:text-gray-300 dark:disabled:text-gray-600 disabled:cursor-default cursor-pointer px-2 py-1.5 transition-colors"
+                className="text-[13px] font-medium text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 disabled:text-gray-300 dark:disabled:text-gray-600 disabled:cursor-default cursor-pointer px-2 py-2.5 transition-colors"
               >
                 {sending ? '...' : 'Send'}
               </button>
