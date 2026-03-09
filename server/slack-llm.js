@@ -61,47 +61,61 @@ async function callOpenAI(prompt) {
 }
 
 export async function callSonnet(prompt) {
-  if (!ANTHROPIC_API_KEY && !OPENAI_API_KEY) return null
+  if (!OPENAI_API_KEY && !ANTHROPIC_API_KEY) return null
   const ts = new Date().toISOString()
 
-  // Try Anthropic first with one retry, then fall back to OpenAI
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  // Try OpenAI first, then fall back to Anthropic (which is often overloaded)
+  if (OPENAI_API_KEY) {
     try {
-      const { result, model, input_tokens, output_tokens } = await callAnthropic(prompt)
+      const { result, model, input_tokens, output_tokens } = await callOpenAI(prompt)
       appendFileSync(LLM_LOG, JSON.stringify({
         ts, model, prompt_tokens: input_tokens, output_tokens,
         prompt: prompt.slice(0, 300), result, cached: false,
       }) + '\n')
       return result
-    } catch (err) {
-      const isOverloaded = err.message.includes('overloaded') || err.message.includes('rate_limit')
-      if (isOverloaded && attempt < MAX_RETRIES) {
-        console.error(`[slack-llm] Anthropic ${err.message} (attempt ${attempt + 1}), retrying...`)
-        await new Promise(r => setTimeout(r, RETRY_DELAY))
-        continue
-      }
-      // Anthropic failed — try OpenAI fallback
-      if (OPENAI_API_KEY) {
-        console.error(`[slack-llm] Anthropic failed (${err.message}), falling back to GPT-4.1`)
-        try {
-          const { result, model, input_tokens, output_tokens } = await callOpenAI(prompt)
-          appendFileSync(LLM_LOG, JSON.stringify({
-            ts, model, prompt_tokens: input_tokens, output_tokens,
-            prompt: prompt.slice(0, 300), result, cached: false, fallback: true,
-          }) + '\n')
-          return result
-        } catch (oaiErr) {
-          appendFileSync(LLM_LOG, JSON.stringify({ ts, error: `both failed: anthropic=${err.message}, openai=${oaiErr.message}`, prompt: prompt.slice(0, 300) }) + '\n')
-          console.error(`[slack-llm] Both providers failed: ${oaiErr.message}`)
-          return null
+    } catch (oaiErr) {
+      console.error(`[slack-llm] OpenAI failed (${oaiErr.message}), falling back to Anthropic`)
+      if (ANTHROPIC_API_KEY) {
+        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+          try {
+            const { result, model, input_tokens, output_tokens } = await callAnthropic(prompt)
+            appendFileSync(LLM_LOG, JSON.stringify({
+              ts, model, prompt_tokens: input_tokens, output_tokens,
+              prompt: prompt.slice(0, 300), result, cached: false, fallback: true,
+            }) + '\n')
+            return result
+          } catch (err) {
+            const isOverloaded = err.message.includes('overloaded') || err.message.includes('rate_limit')
+            if (isOverloaded && attempt < MAX_RETRIES) {
+              console.error(`[slack-llm] Anthropic ${err.message} (attempt ${attempt + 1}), retrying...`)
+              await new Promise(r => setTimeout(r, RETRY_DELAY))
+              continue
+            }
+            appendFileSync(LLM_LOG, JSON.stringify({ ts, error: `both failed: openai=${oaiErr.message}, anthropic=${err.message}`, prompt: prompt.slice(0, 300) }) + '\n')
+            console.error(`[slack-llm] Both providers failed: ${err.message}`)
+            return null
+          }
         }
       }
-      appendFileSync(LLM_LOG, JSON.stringify({ ts, error: err.message, prompt: prompt.slice(0, 300) }) + '\n')
-      console.error(`[slack-llm] Anthropic failed, no fallback: ${err.message}`)
+      appendFileSync(LLM_LOG, JSON.stringify({ ts, error: oaiErr.message, prompt: prompt.slice(0, 300) }) + '\n')
+      console.error(`[slack-llm] OpenAI failed, no fallback: ${oaiErr.message}`)
       return null
     }
   }
-  return null
+
+  // No OpenAI key — try Anthropic directly
+  try {
+    const { result, model, input_tokens, output_tokens } = await callAnthropic(prompt)
+    appendFileSync(LLM_LOG, JSON.stringify({
+      ts, model, prompt_tokens: input_tokens, output_tokens,
+      prompt: prompt.slice(0, 300), result, cached: false,
+    }) + '\n')
+    return result
+  } catch (err) {
+    appendFileSync(LLM_LOG, JSON.stringify({ ts, error: err.message, prompt: prompt.slice(0, 300) }) + '\n')
+    console.error(`[slack-llm] Anthropic failed: ${err.message}`)
+    return null
+  }
 }
 
 // analysisCache: keyed by category, stores { fingerprint, result }

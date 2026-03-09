@@ -9,7 +9,8 @@ import { readFileSync, writeFileSync } from 'fs'
 import { resolve } from 'path'
 import { readData, saveData, createTask } from './store.js'
 import { SLACK_TOKEN, INITIAL_LOOKBACK_HOURS } from './slack-api.js'
-import { analyzeCrashes, analyzeDM, analyzeThread, analyzeIncidentChannel, generateSuggestion, clearAnalysisCache } from './slack-llm.js'
+import { analyzeCrashes, analyzeIncidentChannel, clearAnalysisCache } from './slack-llm.js'
+import { triageSlackItem } from './slack-triage.js'
 import { scanUnrepliedDMs, scanMentions, scanCrashes, scanThreadActivity, scanNewIncidents, readIncidentChannelMessages } from './slack-scanners.js'
 
 // --- Acknowledgment state (persisted to disk) ---
@@ -80,88 +81,109 @@ async function updateDigest() {
       return Math.max(...context.map(m => parseFloat(m.ts) || 0))
     }
 
-    // DMs — Sonnet classifies each as URGENT or NOT_URGENT
+    // DMs — unified triage (urgency + suggestion in one call)
     if (unrepliedDMs.length > 0) {
-      const analyses = await Promise.all(
-        unrepliedDMs.map(dm => analyzeDM(dm.chId, dm.person, dm.context))
+      const triages = await Promise.all(
+        unrepliedDMs.map(dm => triageSlackItem(`dm:${dm.chId}`, 'dm', {
+          person: dm.person,
+          messages: (dm.context || []).sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts)),
+        }))
       )
       const urgent = []
       const notUrgent = []
       for (let i = 0; i < unrepliedDMs.length; i++) {
         const dm = unrepliedDMs[i]
-        const raw = analyses[i] || ''
-        const urgentMatch = raw.match(/URGENT:\s*(.+)/m)
-        const notUrgentMatch = raw.match(/NOT_URGENT:\s*(.+)/m)
-        // Most recent 5 messages in chronological order (oldest first)
+        const t = triages[i]
         const thread = (dm.context || []).slice(-5).map(m => ({
           who: m.who, text: (m.text || '').slice(0, 200),
         }))
         const latestTs = contextLatestTs(dm.context)
-        if (notUrgentMatch) {
-          notUrgent.push(dm.person)
-        } else if (urgentMatch) {
-          urgent.push({ person: dm.person, summary: urgentMatch[1].trim(), thread, chId: dm.chId, latestTs })
-        } else if (!raw) {
-          // LLM failed (null) — default to not urgent rather than surfacing noise
+        if (!t || t.urgency === 'FYI') {
           notUrgent.push(dm.person)
         } else {
-          urgent.push({ person: dm.person, summary: raw, thread, chId: dm.chId, latestTs })
+          const suggestion = t.action ? JSON.stringify({ action: t.action, draft: t.draft }) : null
+          urgent.push({ person: dm.person, summary: t.summary || 'needs response', thread, chId: dm.chId, latestTs, suggestion })
         }
       }
       for (const u of urgent) {
-        items.push({ text: `${u.person}: ${u.summary}`, slackThread: u.thread, slackRef: u.chId, context: 'slack-dms', priority: 2, latestTs: u.latestTs })
+        items.push({ text: `${u.person}: ${u.summary}`, slackThread: u.thread, slackRef: u.chId, context: 'slack-dms', priority: 2, latestTs: u.latestTs, suggestion: u.suggestion })
       }
       if (notUrgent.length > 0) {
         items.push({ text: `DMs: ${notUrgent.join(', ')} — nothing urgent`, context: 'slack-dms', priority: 0 })
       }
     }
 
-    // @mentions — individual items with thread context
+    // @mentions — unified triage (urgency + suggestion in one call)
     if (mentions.length > 0) {
-      for (const m of mentions) {
+      const triages = await Promise.all(
+        mentions.map(m => triageSlackItem(
+          `mention:${m.chId}:${m.threadTs}`,
+          'mention',
+          {
+            channel: m.channelName,
+            messages: (m.context || []).sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts)),
+          }
+        ))
+      )
+      const actionMentions = []
+      const fyiMentions = []
+      for (let i = 0; i < mentions.length; i++) {
+        const m = mentions[i]
+        const t = triages[i]
         const thread = (m.context || []).map(c => ({
           who: c.who, text: (c.text || '').slice(0, 200),
         }))
         const slackRef = m.isThread ? `${m.chId}/${m.threadTs}` : m.chId
-        items.push({
-          text: `${m.sender} in ${m.channel}: ${m.text}`,
-          slackThread: thread.length > 0 ? thread : undefined,
-          slackRef,
-          from: m.sender,
-          channelLabel: m.channel,
-          context: 'slack-mentions',
-          priority: 2,
-          latestTs: contextLatestTs(m.context),
-        })
+        const latestTs = contextLatestTs(m.context)
+        if (!t || t.urgency === 'FYI') {
+          fyiMentions.push({ sender: m.sender, channel: m.channel })
+        } else {
+          const suggestion = t.action ? JSON.stringify({ action: t.action, draft: t.draft }) : null
+          actionMentions.push({
+            text: `${m.sender} in ${m.channel}: ${t.summary || m.text}`,
+            slackThread: thread.length > 0 ? thread : undefined,
+            slackRef, from: m.sender, channelLabel: m.channel,
+            context: 'slack-mentions', priority: 2, latestTs, suggestion,
+          })
+        }
+      }
+      for (const a of actionMentions) {
+        items.push(a)
+      }
+      if (fyiMentions.length > 0) {
+        const names = [...new Set(fyiMentions.map(f => f.sender))].join(', ')
+        const channels = [...new Set(fyiMentions.map(f => f.channel))].join(', ')
+        items.push({ text: `Mentions: ${names} in ${channels} — FYI only`, context: 'slack-mentions', priority: 0 })
       }
     }
 
-    // Threads — LLM triage into ACTION_NEEDED / FYI
+    // Threads — unified triage (urgency + suggestion in one call)
     if (threadActivity.length > 0) {
-      const analyses = await Promise.all(
-        threadActivity.map(t => analyzeThread(t.threadKey, t.channel, t.context))
+      const triages = await Promise.all(
+        threadActivity.map(t => triageSlackItem(t.threadKey, 'thread', {
+          channel: t.channel,
+          messages: (t.context || []).sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts)),
+        }))
       )
       const actionNeeded = []
       const fyi = []
       for (let i = 0; i < threadActivity.length; i++) {
         const t = threadActivity[i]
-        const raw = analyses[i] || ''
+        const tr = triages[i]
         const thread = (t.context || []).slice(-5).map(m => ({
           who: m.who, text: (m.text || '').slice(0, 200),
         }))
-        // threadKey is "channelId:threadTs" — convert to "channelId/threadTs" for slack_thread link ref
         const slackRef = t.threadKey ? t.threadKey.replace(':', '/') : null
         const latestTs = contextLatestTs(t.context)
-        if (raw.startsWith('ACTION_NEEDED:')) {
-          actionNeeded.push({ channel: t.channel, from: t.from, summary: raw.slice(14).trim(), thread, slackRef, latestTs })
-        } else if (raw.startsWith('FYI:')) {
+        if (!tr || tr.urgency === 'FYI') {
           fyi.push({ channel: t.channel, from: t.from })
         } else {
-          actionNeeded.push({ channel: t.channel, from: t.from, summary: raw || `${t.from} replied`, thread, slackRef, latestTs })
+          const suggestion = tr.action ? JSON.stringify({ action: tr.action, draft: tr.draft }) : null
+          actionNeeded.push({ channel: t.channel, from: t.from, summary: tr.summary || `${t.from} replied`, thread, slackRef, latestTs, suggestion })
         }
       }
       for (const a of actionNeeded) {
-        items.push({ text: `#${a.channel}: ${a.summary}`, slackThread: a.thread, slackRef: a.slackRef, context: 'slack-threads', priority: 2, latestTs: a.latestTs })
+        items.push({ text: `#${a.channel}: ${a.summary}`, slackThread: a.thread, slackRef: a.slackRef, context: 'slack-threads', priority: 2, latestTs: a.latestTs, suggestion: a.suggestion })
       }
       if (fyi.length > 0) {
         const names = [...new Set(fyi.map(f => f.from))].join(', ')
@@ -209,20 +231,7 @@ async function updateDigest() {
       return false // still dismissed, no new activity
     })
 
-    // Generate LLM suggestions for actionable items with thread context
-    const suggestionTargets = filteredItems.filter(i => i.priority > 0 && i.slackThread?.length > 0)
-    if (suggestionTargets.length > 0) {
-      const suggestions = await Promise.all(
-        suggestionTargets.map(i => generateSuggestion(
-          i.slackRef || i.text,
-          i.slackThread.map((m, idx) => ({ ...m, ts: String(idx) })),
-          i.text
-        ))
-      )
-      for (let j = 0; j < suggestionTargets.length; j++) {
-        if (suggestions[j]) suggestionTargets[j].suggestion = suggestions[j]
-      }
-    }
+    // Suggestions already included from unified triage — no separate pass needed
 
     // Update pulse list
     const data = readData()
