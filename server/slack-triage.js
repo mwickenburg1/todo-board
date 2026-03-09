@@ -26,9 +26,16 @@ export function buildTriagePrompt(source, { person, channel, messages }) {
     .map(m => `${m.who}: ${(m.text || '').slice(0, 200)}`)
     .join('\n')
 
+  // For DMs, detect all participants to identify group DMs
+  const otherPeople = [...new Set(messages.filter(m => m.who !== 'me').map(m => m.who))]
+  const isGroupDM = source === 'dm' && otherPeople.length > 1
+
   const sourceLabel =
-    source === 'dm' ? `DM conversation with ${person}` :
-    source === 'mention' ? `@mention in #${channel}` :
+    source === 'dm'
+      ? isGroupDM
+        ? `Group DM with ${otherPeople.join(', ')}`
+        : `DM conversation with ${person}`
+    : source === 'mention' ? `@mention in #${channel}` :
     `thread in #${channel}`
 
   return `I am Matthias (shown as "me" or "mwickenburg" in the transcript). Any message addressed to @Matthias is addressed to ME.
@@ -53,6 +60,7 @@ Critical distinctions:
 - If the conversation continued AFTER the @mention and resolved without me, that's FYI.
 - Only consider messages AFTER my last reply — everything before that is handled.
 - If they acknowledged or said they'll handle it ("noted", "will do", "on it"), ball is in THEIR court — FYI.
+- In group DMs: if two OTHER people are talking to EACH OTHER (not addressing me), that's FYI — even if one asks the other a question.
 
 Rules for DRAFT:
 - Write as Matthias would actually reply — casual, direct, concise (1-3 sentences).

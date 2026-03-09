@@ -510,7 +510,7 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
                   <textarea
                     value={replyText}
                     onChange={(e) => setReplyText(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }}
                     placeholder="Reply..."
                     rows={2}
                     className="flex-1 text-[14px] bg-white dark:bg-white/[0.05] border border-gray-200/50 dark:border-white/[0.08] rounded-md px-3 py-2.5 text-gray-700 dark:text-gray-300 placeholder-gray-400/60 dark:placeholder-gray-500/40 focus:outline-none focus:border-blue-400/50 dark:focus:border-blue-500/30 transition-colors resize-none"
@@ -627,7 +627,7 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
               <textarea
                 value={replyText}
                 onChange={(e) => setReplyText(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }}
+                onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }}
                 placeholder="Reply in thread..."
                 rows={2}
                 className="flex-1 text-[14px] bg-white dark:bg-white/[0.05] border border-gray-200/50 dark:border-white/[0.08] rounded-md px-3 py-2.5 text-gray-700 dark:text-gray-300 placeholder-gray-400/60 dark:placeholder-gray-500/40 focus:outline-none focus:border-blue-400/50 dark:focus:border-blue-500/30 transition-colors resize-none"

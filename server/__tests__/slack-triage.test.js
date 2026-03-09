@@ -103,6 +103,26 @@ const FIXTURES = {
     },
     expect: { urgency: 'ACTION_NEEDED' },
   },
+
+  // Case 6: Group DM where two others are talking to each other → FYI
+  groupDmOthersConversing: {
+    source: 'dm',
+    opts: {
+      person: 'Chris Weatherly',
+      messages: [
+        { who: 'me', text: 'morning @Chris Weatherly - Kevin, can we take a look?', ts: '1773040000' },
+        { who: 'Chris Weatherly', text: 'Hey Kevin — the agent task for the shared Slack channel isn\'t picking up new messages', ts: '1773050000' },
+        { who: 'Kevin', text: 'What channel is it? Let me check the config', ts: '1773050100' },
+        { who: 'Chris Weatherly', text: 'It\'s the #acme-support channel we set up last week', ts: '1773050200' },
+        { who: 'Kevin', text: 'Ah I see the issue — the destination channel ID is wrong. Could you please write me the channel name so I can update it?', ts: '1773050300' },
+        { who: 'Chris Weatherly', text: 'Sure, it\'s acme-customer-support', ts: '1773050400' },
+        { who: 'Kevin', text: 'Updated. Try it now', ts: '1773050500' },
+        { who: 'Chris Weatherly', text: 'Works! Thanks Kevin', ts: '1773050600' },
+      ],
+    },
+    // Matthias delegated to Kevin early on, the rest is between Kevin and Chris → FYI
+    expect: { urgency: 'FYI' },
+  },
 }
 
 // ─── Unit tests: parseTriageResult (deterministic) ───
@@ -173,6 +193,19 @@ describe('buildTriagePrompt', () => {
     const prompt = buildTriagePrompt('dm', { person: 'Kevin', messages: [{ who: 'Kevin', text: 'Hey', ts: '1' }] })
     expect(prompt).toContain('DM conversation with Kevin')
     expect(prompt).toContain('I am Matthias')
+  })
+
+  it('detects group DM with multiple participants', () => {
+    const prompt = buildTriagePrompt('dm', {
+      person: 'Chris',
+      messages: [
+        { who: 'me', text: 'Hey', ts: '1' },
+        { who: 'Chris', text: 'Hi', ts: '2' },
+        { who: 'Kevin', text: 'Hello', ts: '3' },
+      ],
+    })
+    expect(prompt).toContain('Group DM with Chris, Kevin')
+    expect(prompt).not.toContain('DM conversation with')
   })
 
   it('includes mention source label', () => {
@@ -295,6 +328,13 @@ Respond with ONLY "CORRECT" or "INCORRECT: <reason>".`
     const result = await evalTriage(f)
     expect(result.urgency).toBe('ACTION_NEEDED')
     expect(result.draft).toBeTruthy()
+  }, 15000)
+
+  it('group dm: others conversing without me → FYI', async () => {
+    const f = FIXTURES.groupDmOthersConversing
+    const result = await evalTriage(f)
+    expect(result.urgency).toBe('FYI')
+    expect(result.draft).toBeNull()
   }, 15000)
 
   // Consistency test: run the same fixture 3 times, all should agree
