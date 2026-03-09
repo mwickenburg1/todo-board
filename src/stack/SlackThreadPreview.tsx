@@ -282,15 +282,15 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
   const channelName = data?.channelName || null
   const colorMap = new Map<string, string>()
 
-  // Recency opacity: last 5 messages get gradient 0.35→1.0, older ones get 0.3
+  // Recency opacity: most recent message brightest, older ones fade out more aggressively
   const recencyOpacity = (idx: number, total: number): number => {
     const fromEnd = total - 1 - idx
     if (fromEnd === 0) return 1.0
-    if (fromEnd === 1) return 0.85
-    if (fromEnd === 2) return 0.65
-    if (fromEnd === 3) return 0.50
-    if (fromEnd === 4) return 0.40
-    return 0.30
+    if (fromEnd === 1) return 0.70
+    if (fromEnd === 2) return 0.50
+    if (fromEnd === 3) return 0.35
+    if (fromEnd === 4) return 0.25
+    return 0.18
   }
 
   return (
