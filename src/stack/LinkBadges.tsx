@@ -166,6 +166,8 @@ const ENV_NUM_COLORS: Record<string, string> = {
   '6': 'text-cyan-500 dark:text-cyan-400',
   '7': 'text-orange-500 dark:text-orange-400',
   '8': 'text-indigo-500 dark:text-indigo-400',
+  '9': 'text-pink-500 dark:text-pink-400',
+  '10': 'text-red-500 dark:text-red-400',
 }
 
 function ClaudeEnvBadges({ typeLinks, allLinks, onRemove }: {

@@ -1,6 +1,6 @@
 import type { EnvSlotInfo, EnvStatusRemote } from './types'
 
-const ENV_ORDER = ['env1', 'env2', 'env3', 'env4', 'env5', 'env6', 'env7', 'env8', 'sync']
+const ENV_ORDER = ['env1', 'env2', 'env3', 'env4', 'env5', 'env6', 'env7', 'env8', 'env9', 'env10', 'sync']
 
 export function EnvStatusBar({ envSlots, remoteStatus }: {
   envSlots: Record<string, EnvSlotInfo>

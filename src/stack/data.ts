@@ -166,7 +166,7 @@ export function processForStack(data: TodoData, snoozeMap?: Record<number, Snooz
 
   // Env slots
   const envSlots: Record<string, EnvSlotInfo> = {}
-  const envOrder = ['env1', 'env2', 'env3', 'env4', 'env5', 'env6', 'env7', 'env8', 'sync']
+  const envOrder = ['env1', 'env2', 'env3', 'env4', 'env5', 'env6', 'env7', 'env8', 'env9', 'env10', 'sync']
   for (const slot of envOrder) {
     const nowItem = (data.lists.now || []).find(n => n.focus_slot === slot)
     envSlots[slot] = {

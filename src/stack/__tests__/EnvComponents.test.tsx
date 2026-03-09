@@ -10,7 +10,7 @@ import React from 'react'
  * and interaction logic that the components implement.
  */
 
-const ENV_SLOTS = ['env1', 'env2', 'env3', 'env4', 'env5', 'env6', 'env7', 'env8'] as const
+const ENV_SLOTS = ['env1', 'env2', 'env3', 'env4', 'env5', 'env6', 'env7', 'env8', 'env9', 'env10'] as const
 const ENV_SLOT_COLORS: Record<string, string> = {
   env1: 'bg-blue-400',
   env2: 'bg-emerald-400',
@@ -20,6 +20,8 @@ const ENV_SLOT_COLORS: Record<string, string> = {
   env6: 'bg-cyan-400',
   env7: 'bg-orange-400',
   env8: 'bg-indigo-400',
+  env9: 'bg-pink-400',
+  env10: 'bg-red-400',
 }
 
 // Replicate EnvSlots component for testing

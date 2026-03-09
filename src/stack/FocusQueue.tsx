@@ -70,7 +70,7 @@ function DeepWork() {
   )
 }
 
-const ALL_ENVS = ['env1', 'env2', 'env3', 'env4', 'env5', 'env6', 'env7', 'env8']
+const ALL_ENVS = ['env1', 'env2', 'env3', 'env4', 'env5', 'env6', 'env7', 'env8', 'env9', 'env10']
 
 function EnvControls({ taskId, env, label, isLinked, onSetEnv }: {
   taskId: number

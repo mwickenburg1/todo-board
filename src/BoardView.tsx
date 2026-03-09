@@ -195,7 +195,7 @@ export default function BoardView({ onSwitchView }: { onSwitchView: () => void }
       <h2 className="text-xs font-semibold text-[#37352f] uppercase tracking-wide mb-4">Active Focus</h2>
       <div className="flex gap-4 mb-10 overflow-x-auto pb-2">
         {[...now].sort((a, b) => {
-          const order: Record<string, number> = { env1: 0, env2: 1, env3: 2, env4: 3, env5: 4, env6: 5, env7: 6, env8: 7, sync: 8 }
+          const order: Record<string, number> = { env1: 0, env2: 1, env3: 2, env4: 3, env5: 4, env6: 5, env7: 6, env8: 7, env9: 8, env10: 9, sync: 10 }
           return (order[(a.focus_slot || '').toLowerCase()] ?? 99) - (order[(b.focus_slot || '').toLowerCase()] ?? 99)
         }).map((task, idx) => {
           const isEmpty = task.is_empty_slot || !task.id

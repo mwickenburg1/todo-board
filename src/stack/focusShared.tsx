@@ -7,6 +7,8 @@ export const ENV_COLORS: Record<string, { bg: string; border: string; text: stri
   env6: { bg: 'bg-blue-50 dark:bg-blue-500/10', border: 'border-blue-200/60 dark:border-blue-400/20', text: 'text-blue-600 dark:text-blue-400' },
   env7: { bg: 'bg-indigo-50 dark:bg-indigo-500/10', border: 'border-indigo-200/60 dark:border-indigo-400/20', text: 'text-indigo-600 dark:text-indigo-400' },
   env8: { bg: 'bg-purple-50 dark:bg-purple-500/10', border: 'border-purple-200/60 dark:border-purple-400/20', text: 'text-purple-600 dark:text-purple-400' },
+  env9: { bg: 'bg-pink-50 dark:bg-pink-500/10', border: 'border-pink-200/60 dark:border-pink-400/20', text: 'text-pink-600 dark:text-pink-400' },
+  env10: { bg: 'bg-rose-50 dark:bg-rose-500/10', border: 'border-rose-200/60 dark:border-rose-400/20', text: 'text-rose-600 dark:text-rose-400' },
 }
 
 export const ESCALATION_COLORS = [
@@ -17,7 +19,7 @@ export const ESCALATION_COLORS = [
 ]
 
 export const REMOTE_ENVS: Record<string, { space: number }> = {
-  env5: { space: 5 }, env6: { space: 6 }, env7: { space: 7 }, env8: { space: 8 },
+  env5: { space: 5 }, env6: { space: 6 }, env7: { space: 7 }, env8: { space: 8 }, env9: { space: 9 }, env10: { space: 10 },
 }
 
 export function showToast(message: string, duration = 10000) {
