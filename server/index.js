@@ -211,6 +211,29 @@ app.post('/api/slack-thread/:channel/:ts/read', (req, res) => {
   res.json({ success: true })
 })
 
+app.post('/api/slack-reply/:channel/:threadTs', async (req, res) => {
+  const { channel, threadTs } = req.params
+  const { text } = req.body || {}
+  if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' })
+  try {
+    const token = process.env.SLACK_USER_TOKEN
+    if (!token) return res.status(500).json({ error: 'SLACK_USER_TOKEN not configured' })
+    const body = { channel, text }
+    if (threadTs !== 'channel') body.thread_ts = threadTs
+    const r = await fetch('https://slack.com/api/chat.postMessage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    })
+    const data = await r.json()
+    if (!data.ok) return res.status(400).json({ error: data.error })
+    res.json({ ok: true, ts: data.ts })
+  } catch (err) {
+    console.error('[slack-reply] error:', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
 app.get('/api/slack-cursors', (req, res) => {
   res.json(getAllReadCursors())
 })

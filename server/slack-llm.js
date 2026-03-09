@@ -159,7 +159,7 @@ export async function analyzeDM(chId, person, messages) {
       .sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts))
       .map(m => `${m.who}: ${(m.text || '').slice(0, 200)}`)
       .join('\n')
-    const prompt = `Recent DM conversation with ${person} (I am "me"):\n\n${transcript}\n\nRespond in this exact format (no markdown):\nURGENT: <summary max 12 words>\nor\nNOT_URGENT: <summary max 12 words>\n\nURGENT = they're blocked, waiting on me right now, or it's time-sensitive. They asked a direct question or need a decision and can't proceed without me.\nNOT_URGENT = FYI, casual, sharing info/updates, completed task, questions that can wait, or no immediate action needed.\n\nIMPORTANT:\n- Only consider messages AFTER my last reply — everything before that is handled.\n- Classify based on the MOST urgent unaddressed topic only.\n- Sharing plans, updates, or logistics is NOT_URGENT unless they explicitly asked me to do something and are blocked.\n- If they acknowledged, confirmed, or said they'll handle it (e.g. "noted", "will do", "on it", "I'll look into it"), the ball is in THEIR court — that's NOT_URGENT.`
+    const prompt = `Recent DM conversation with ${person}. I am Matthias (shown as "me" or "mwickenburg" in the transcript). Any message addressed to @Matthias is addressed to ME.\n\n${transcript}\n\nRespond in this exact format (no markdown):\nURGENT: <summary max 12 words>\nor\nNOT_URGENT: <summary max 12 words>\n\nURGENT = they're blocked, waiting on me right now, or it's time-sensitive. They asked a direct question or need a decision and can't proceed without me.\nNOT_URGENT = FYI, casual, sharing info/updates, completed task, questions that can wait, or no immediate action needed.\n\nIMPORTANT:\n- Only consider messages AFTER my last reply — everything before that is handled.\n- Classify based on the MOST urgent unaddressed topic only.\n- Sharing plans, updates, or logistics is NOT_URGENT unless they explicitly asked me to do something and are blocked.\n- If they acknowledged, confirmed, or said they'll handle it (e.g. "noted", "will do", "on it", "I'll look into it"), the ball is in THEIR court — that's NOT_URGENT.`
     return callSonnet(prompt)
   })
 }
@@ -173,7 +173,7 @@ export async function analyzeThread(threadKey, channel, context) {
       .sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts))
       .map(m => `${m.who}: ${m.text}`)
       .join('\n')
-    const prompt = `I am "me" in this Slack thread in #${channel}. Summarize what's happening and if I need to act.\n\n${transcript}\n\nYou MUST respond with EXACTLY one of these two formats (first word must be ACTION_NEEDED or FYI):\nACTION_NEEDED: <summary max 12 words>\nFYI: <summary max 12 words>\n\nACTION_NEEDED = someone asked me something, waiting on me, or I need to respond.\nFYI = status update, someone else handled it, or just informational.`
+    const prompt = `I am Matthias (shown as "me" or "mwickenburg" in the transcript) in this Slack thread in #${channel}. Any message addressed to @Matthias is addressed to ME. Summarize what's happening and if I need to act.\n\n${transcript}\n\nYou MUST respond with EXACTLY one of these two formats (first word must be ACTION_NEEDED or FYI):\nACTION_NEEDED: <summary max 12 words>\nFYI: <summary max 12 words>\n\nACTION_NEEDED = someone asked ME (Matthias) a direct question, is waiting on ME, or I specifically need to respond.\nFYI = status update, someone else handled it, informational, or the request/question is directed at someone else.\n\nCRITICAL: If a message @mentions or directs a question at someone OTHER than me (e.g. "@Sam can you check this?"), that is FYI for me — the ball is in THEIR court, not mine. Only classify as ACTION_NEEDED if I am specifically asked to do something or the question is directed at me.`
     return callSonnet(prompt)
   })
 }
@@ -187,8 +187,35 @@ export async function generateSuggestion(cacheKey, context, itemText) {
       .sort((a, b) => parseFloat(a.ts || '0') - parseFloat(b.ts || '0'))
       .map(m => `${m.who}: ${(m.text || '').slice(0, 200)}`)
       .join('\n')
-    const prompt = `I am "me" in this Slack conversation. Based on the context, suggest what I should do next in 1-2 sentences. Be specific and actionable — e.g. "Reply confirming the timeline" or "Delegate to X since they own this area". No markdown, no quotes.\n\nItem: ${itemText}\n\nConversation:\n${transcript}`
-    return callSonnet(prompt)
+    const prompt = `I am Matthias (shown as "me" or "mwickenburg" in the transcript). Any message addressed to @Matthias is addressed to ME. Based on the context, suggest what I should do next AND draft a reply I can send.
+
+Respond in this exact format (no markdown):
+ACTION: <what I should do in 1-2 sentences>
+DRAFT: <a ready-to-send reply message, written as me (Matthias), conversational and concise>
+
+If no action is needed (directed at someone else, or already handled), respond:
+ACTION: No action needed — <reason>
+DRAFT: none
+
+Guidelines for DRAFT:
+- Write as Matthias would actually reply in Slack — casual, direct, helpful
+- Keep it short (1-3 sentences max)
+- Don't be overly formal or add unnecessary pleasantries
+- If acknowledging, just acknowledge naturally
+- If answering a question, answer it directly
+
+Item: ${itemText}
+
+Conversation:
+${transcript}`
+    return callSonnet(prompt).then(result => {
+      if (!result) return null
+      const actionMatch = result.match(/^ACTION:\s*(.+)/m)
+      const draftMatch = result.match(/^DRAFT:\s*(.+)/m)
+      const action = actionMatch ? actionMatch[1].trim() : result
+      const draft = draftMatch && draftMatch[1].trim().toLowerCase() !== 'none' ? draftMatch[1].trim() : null
+      return JSON.stringify({ action, draft })
+    })
   })
 }
 

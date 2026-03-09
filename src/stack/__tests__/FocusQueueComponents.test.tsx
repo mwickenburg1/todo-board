@@ -8,9 +8,9 @@ import React from 'react'
 function slackUrl(ref: string): string {
   const [channel, ts] = ref.split('/')
   if (channel && ts) {
-    return `https://slack.com/app_redirect?channel=${channel}&message_ts=${ts}`
+    return `https://attentiontech.slack.com/archives/${channel}/p${ts.replace('.', '')}`
   }
-  return `https://slack.com/app_redirect?channel=${ref}`
+  return `https://attentiontech.slack.com/archives/${ref}`
 }
 
 // ── Minimal NewItemFlow replica for testing keyboard/render logic ──
@@ -20,25 +20,25 @@ import { NewItemFlow } from '../NewItemFlow'
 describe('slackUrl helper', () => {
   it('builds a channel-only URL when ref has no slash', () => {
     expect(slackUrl('D097L806MTQ')).toBe(
-      'https://slack.com/app_redirect?channel=D097L806MTQ'
+      'https://attentiontech.slack.com/archives/D097L806MTQ'
     )
   })
 
   it('builds a channel+message_ts URL when ref contains a slash', () => {
     expect(slackUrl('C0ABC123/1234567890.123456')).toBe(
-      'https://slack.com/app_redirect?channel=C0ABC123&message_ts=1234567890.123456'
+      'https://attentiontech.slack.com/archives/C0ABC123/p1234567890123456'
     )
   })
 
   it('handles a DM channel ref', () => {
     expect(slackUrl('D12345')).toBe(
-      'https://slack.com/app_redirect?channel=D12345'
+      'https://attentiontech.slack.com/archives/D12345'
     )
   })
 
   it('handles a thread ref with typical Slack timestamp', () => {
     expect(slackUrl('C999ZZZ/1700000000.000100')).toBe(
-      'https://slack.com/app_redirect?channel=C999ZZZ&message_ts=1700000000.000100'
+      'https://attentiontech.slack.com/archives/C999ZZZ/p1700000000000100'
     )
   })
 })

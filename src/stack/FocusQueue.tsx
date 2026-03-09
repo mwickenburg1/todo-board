@@ -27,10 +27,12 @@ interface FocusResponse {
     emphasizedHotkeys?: string[]
     fleet?: FleetEnv[]
     from?: string | null
+    channelLabel?: string | null
     isFireDrill?: boolean
     slackThread?: { who: string; text: string }[] | null
     slackRef?: string | null
     suggestion?: string | null
+    draftReply?: string | null
     slackContext?: { label: string; ref: string }[] | null
     env?: string | null
     claudeLinks?: { label: string; ref: string; idx: number }[] | null
@@ -560,13 +562,6 @@ export function FocusQueue() {
           )
         })()}
 
-        {/* Slack thread — reuse SlackThreadPreview for proper author resolution + timestamps */}
-        {top!.kind === 'slack' && top!.slackRef && (
-          <div className="mt-8">
-            <SlackThreadPreview ref_={top!.slackRef} label={top!.from || 'Slack'} defaultExpanded />
-          </div>
-        )}
-
         {/* Fleet view */}
         {top!.kind === 'fleet' && top!.fleet && (
           <FleetView fleet={top!.fleet} onSave={handleUpdateTask} onUnlink={handleUnlink} onDone={handleDone} onEscalate={handleEscalate} onAdd={handleAddFleetItem} onReorder={handleReorder} />
@@ -637,6 +632,21 @@ export function FocusQueue() {
                   onSetEnv={handleSetEnv}
                 />
               )}
+            </div>
+          )
+        })()}
+        {/* Slack thread — inside card, reuse SlackThreadPreview */}
+        {top!.kind === 'slack' && top!.slackRef && (() => {
+          const isMention = top!.actionVerb === 'Mention'
+          const refParts = top!.slackRef!.split('/')
+          const hasThreadTs = refParts.length > 1
+          // Mentions with a thread ref: show channel context + auto-open the specific thread
+          // Mentions without a thread ref: show channel context, NO random thread auto-open
+          const channelRef = isMention && hasThreadTs ? refParts[0] : top!.slackRef!
+          const focusTs = isMention ? (hasThreadTs ? refParts[1] : '') : null
+          return (
+            <div className="mt-8">
+              <SlackThreadPreview ref_={channelRef} label={top!.channelLabel || top!.from || 'Slack'} defaultExpanded focusThreadTs={focusTs} draftReply={top!.draftReply || null} />
             </div>
           )
         })()}

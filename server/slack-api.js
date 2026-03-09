@@ -61,8 +61,22 @@ export async function cleanMentions(text) {
     await Promise.all([...bareIds].map(async id => { resolved[id] = await resolveUser(id) }))
     cleaned = cleaned.replace(/<@(U[A-Z0-9]+)>/g, (_, id) => `@${resolved[id] || id}`)
   }
-  // Channel refs: <#C123|name> → #name
-  cleaned = cleaned.replace(/<#C[A-Z0-9]+\|([^>]+)>/g, (_, name) => `#${name}`)
+  // Channel refs: <#C123|name> → #name, bare <#C123> → #channel (resolve via API)
+  cleaned = cleaned.replace(/<#(C[A-Z0-9]+)\|([^>]+)>/g, (_, _id, name) => `#${name}`)
+  const bareChanRe = /<#(C[A-Z0-9]+)>/g
+  const bareChanIds = new Set()
+  let cm
+  while ((cm = bareChanRe.exec(cleaned)) !== null) bareChanIds.add(cm[1])
+  if (bareChanIds.size > 0) {
+    const chanResolved = {}
+    await Promise.all([...bareChanIds].map(async id => {
+      try {
+        const info = await slack('conversations.info', { channel: id })
+        chanResolved[id] = info.ok ? info.channel.name : id
+      } catch { chanResolved[id] = id }
+    }))
+    cleaned = cleaned.replace(/<#(C[A-Z0-9]+)>/g, (_, id) => `#${chanResolved[id] || id}`)
+  }
   return cleaned
 }
 

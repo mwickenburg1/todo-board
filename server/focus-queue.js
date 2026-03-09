@@ -123,7 +123,16 @@ function computeQueue(data) {
     else if (p.context === 'slack-crashes') score = 1000
     else continue
 
-    slackItems.push({ id: p.id, score: score + (p.priority * 10), text: p.text, slackThread: p.slackThread, slackRef: p.slackRef, context: p.context, from: p.from || null, suggestion: p.suggestion || null })
+    let suggestion = p.suggestion || null
+    let draftReply = null
+    if (suggestion) {
+      try {
+        const parsed = JSON.parse(suggestion)
+        suggestion = parsed.action || suggestion
+        draftReply = parsed.draft || null
+      } catch {}
+    }
+    slackItems.push({ id: p.id, score: score + (p.priority * 10), text: p.text, slackThread: p.slackThread, slackRef: p.slackRef, context: p.context, from: p.from || null, channelLabel: p.channelLabel || null, suggestion, draftReply })
   }
 
   // Each urgent Slack item is its own card
@@ -133,16 +142,18 @@ function computeQueue(data) {
     const summary = colonIdx > 0 ? s.text.slice(colonIdx + 2) : s.text
     const verbMap = { 'slack-dms': 'DM', 'slack-mentions': 'Mention', 'slack-threads': 'Thread', 'slack-incidents': 'Incident', 'slack-crashes': 'Crashes' }
     // Clean Slack user mention markup: <@U123|Name> → @Name, <@U123> → @user
-    const cleanLabel = summary.replace(/<@[A-Z0-9]+\|([^>]+)>/g, '@$1').replace(/<@[A-Z0-9]+>/g, '@user')
+    const cleanLabel = summary.replace(/<@[A-Z0-9]+\|([^>]+)>/g, '@$1').replace(/<@[A-Z0-9]+>/g, '@user').replace(/<#[A-Z0-9]+\|([^>]+)>/g, '#$1').replace(/<#[A-Z0-9]+>/g, '#channel')
     items.push({
       id: s.id, kind: 'slack', score: s.score,
       label: cleanLabel,
       actionVerb: verbMap[s.context] || 'Slack',
-      from, list: 'pulse',
+      from, channelLabel: s.channelLabel || null,
+      list: 'pulse',
       emphasizedHotkeys: ['done', 'create task'],
       slackThread: s.slackThread || null,
       slackRef: s.slackRef || null,
       suggestion: s.suggestion || null,
+      draftReply: s.draftReply || null,
     })
   }
 

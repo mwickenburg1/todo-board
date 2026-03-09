@@ -105,7 +105,17 @@ export async function scanMentions(since) {
     if (!chId) continue
     const chName = m.channel?.name || '?'
     // Thread ts if in a thread, else the message's own ts
-    const threadTs = m.thread_ts || m.ts
+    // Slack search API sometimes returns thread_ts=null for thread replies — verify via conversations.replies
+    let threadTs = m.thread_ts
+    if (!threadTs) {
+      try {
+        const verify = await slack('conversations.replies', { channel: chId, ts: m.ts, limit: 1 })
+        if (verify.ok && verify.messages?.[0]?.thread_ts && verify.messages[0].thread_ts !== m.ts) {
+          threadTs = verify.messages[0].thread_ts
+        }
+      } catch {}
+    }
+    threadTs = threadTs || m.ts
     const key = `${chId}:${threadTs}`
     if (seen.has(key)) continue
     seen.add(key)
@@ -116,7 +126,7 @@ export async function scanMentions(since) {
       text: await cleanMentions((m.text || '').slice(0, 120)),
       chId,
       threadTs,
-      isThread: !!m.thread_ts,
+      isThread: threadTs !== m.ts,
     })
   }
 

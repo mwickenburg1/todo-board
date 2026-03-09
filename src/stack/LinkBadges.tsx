@@ -70,11 +70,11 @@ export function linkUrl(link: TaskLink): string | null {
   if (link.type === 'slack_thread') {
     const [channel, ts] = link.ref.split('/')
     if (channel && ts) {
-      return `https://slack.com/app_redirect?channel=${channel}&message_ts=${ts}`
+      return `https://attentiontech.slack.com/archives/${channel}/p${ts.replace('.', '')}`
     }
   }
   if (link.type === 'slack') {
-    return `https://slack.com/app_redirect?channel=${link.ref}`
+    return `https://attentiontech.slack.com/archives/${link.ref}`
   }
   return null
 }
@@ -128,6 +128,15 @@ function TypeBadge({ type, typeLinks, allLinks, onRemove }: {
               >
                 <span className="shrink-0 opacity-70"><LinkIcon size={12} /></span>
                 {url ? (
+                  link.type === 'slack_thread' || link.type === 'slack' ? (
+                  <a
+                    href={url.replace(/^https:\/\//, 'googlechromes://')}
+                    onClick={(e) => { e.preventDefault(); window.open(url, '_blank') }}
+                    className="flex-1 text-xs text-gray-700 dark:text-gray-300 hover:text-blue-600 truncate text-left cursor-pointer"
+                  >
+                    {link.label || link.ref}
+                  </a>
+                  ) : (
                   <a
                     href={url}
                     target="_blank"
@@ -136,6 +145,7 @@ function TypeBadge({ type, typeLinks, allLinks, onRemove }: {
                   >
                     {link.label || link.ref}
                   </a>
+                  )
                 ) : (
                   <span className="flex-1 text-xs text-gray-600 dark:text-gray-400 truncate">{link.label || link.ref}</span>
                 )}
