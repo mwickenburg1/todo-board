@@ -76,8 +76,8 @@ async function updateDigest() {
         const raw = analyses[i] || ''
         const urgentMatch = raw.match(/URGENT:\s*(.+)/m)
         const notUrgentMatch = raw.match(/NOT_URGENT:\s*(.+)/m)
-        // Most recent 5 messages, reversed to chronological (oldest first)
-        const thread = (dm.context || []).slice(0, 5).reverse().map(m => ({
+        // Most recent 5 messages in chronological order (oldest first)
+        const thread = (dm.context || []).slice(-5).map(m => ({
           who: m.who, text: (m.text || '').slice(0, 200),
         }))
         if (notUrgentMatch) {
