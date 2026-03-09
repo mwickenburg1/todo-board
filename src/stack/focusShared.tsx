@@ -41,9 +41,9 @@ export function openFleetEnv(env: string, copyPrompt?: string) {
   if (remote) {
     if (copyPrompt) {
       navigator.clipboard.writeText(copyPrompt).catch(() => {})
-      showToast(`\u2303${remote.space} to switch \u00b7 /link copied`)
+      showToast(`\u2303${envNum(env)} to switch \u00b7 /link copied`)
     } else {
-      showToast(`\u2303${remote.space} to switch`)
+      showToast(`\u2303${envNum(env)} to switch`)
     }
     return
   }
@@ -54,6 +54,18 @@ export function openFleetEnv(env: string, copyPrompt?: string) {
   if (copyPrompt) {
     navigator.clipboard.writeText(copyPrompt).catch(() => {})
   }
+}
+
+/** Display label for an env: env10 → "^0", env3 → "3" */
+export function envLabel(env: string): string {
+  const n = env.replace('env', '')
+  return n === '10' ? '^0' : n
+}
+
+/** Short number for env: env10 → "0", env3 → "3". Use where ⌃ prefix is already shown. */
+export function envNum(env: string): string {
+  const n = env.replace('env', '')
+  return n === '10' ? '0' : n
 }
 
 export function StyledTaskText({ text }: { text: string }) {

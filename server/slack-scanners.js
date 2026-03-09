@@ -2,7 +2,7 @@
  * Slack scanners — DMs, @mentions, crashes, threads, incidents.
  */
 
-import { slack, resolveUser, extractBlockText, USER_ID, CRASHES_CHANNEL, INCIDENTS_CHANNEL, BOT_SENDERS, SLACK_SEARCH_TOKEN } from './slack-api.js'
+import { slack, resolveUser, cleanMentions, extractBlockText, USER_ID, CRASHES_CHANNEL, INCIDENTS_CHANNEL, BOT_SENDERS, SLACK_SEARCH_TOKEN } from './slack-api.js'
 
 // --- DMs ---
 
@@ -32,18 +32,47 @@ export async function scanUnrepliedDMs(since) {
     const h = await slack('conversations.history', { channel: chId, limit: 15 }, { useSearch: true })
     if (!h.ok) continue
     const msgs = h.messages || []
-    // Find the most recent incoming message (not from me) in actual history
-    const lastIncoming = msgs.find(m => m.user !== USER_ID && !m.subtype)
+
+    // Fetch thread replies for messages that have them (most recent activity may be in threads)
+    const threadReplies = new Map() // parentTs → [reply messages]
+    for (const m of msgs) {
+      if (m.reply_count > 0 && m.thread_ts) {
+        const replies = await slack('conversations.replies', { channel: chId, ts: m.thread_ts, limit: 10 })
+        if (replies.ok && replies.messages?.length > 1) {
+          // Skip first message (it's the parent), keep only replies
+          threadReplies.set(m.ts, replies.messages.slice(1))
+        }
+      }
+    }
+
+    // Build a timeline: top-level messages + thread replies, sorted by ts
+    const allMessages = []
+    for (const m of msgs) {
+      if (m.subtype) continue
+      allMessages.push({ user: m.user, text: m.text || '', ts: m.ts, isThread: false })
+      // Insert thread replies right after their parent
+      const replies = threadReplies.get(m.ts)
+      if (replies) {
+        for (const r of replies) {
+          allMessages.push({ user: r.user, text: r.text || '', ts: r.ts, isThread: true, parentTs: m.ts })
+        }
+      }
+    }
+    // Sort by timestamp (oldest first for context, we'll reverse later)
+    allMessages.sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts))
+
+    // Find the most recent incoming message (top-level or thread reply, not from me)
+    const lastIncoming = allMessages.filter(m => m.user !== USER_ID).pop()
     if (!lastIncoming) continue
     const lastIncomingTs = parseFloat(lastIncoming.ts)
-    // Check if I replied after the most recent incoming message
-    const replied = msgs.some(m => m.user === USER_ID && parseFloat(m.ts) > lastIncomingTs)
+    // Check if I replied after the most recent incoming message (anywhere)
+    const replied = allMessages.some(m => m.user === USER_ID && parseFloat(m.ts) > lastIncomingTs)
     if (!replied) {
       const context = []
-      for (const m of msgs) {
-        if (m.subtype) continue
-        const who = m.user === USER_ID ? 'me' : info.sender
-        context.push({ who, text: m.text || '', ts: m.ts })
+      for (const m of allMessages) {
+        const who = m.user === USER_ID ? 'me' : await resolveUser(m.user)
+        const prefix = m.isThread ? '↳ ' : ''
+        context.push({ who, text: prefix + await cleanMentions(m.text), ts: m.ts })
       }
       unreplied.push({ person: info.sender, count: 1, lastMsg: (lastIncoming.text || '').slice(0, 120), chId, context })
     }
@@ -64,19 +93,58 @@ export async function scanMentions(since) {
 
   if (!r.ok) return []
 
+  // Dedupe by thread (channel+threadTs) — keep one mention per thread
+  const seen = new Set()
   const mentions = []
   for (const m of (r.messages?.matches || [])) {
     const ts = parseFloat(m.ts)
     if (ts < since) continue
     const sender = m.username || 'unknown'
     if (BOT_SENDERS.has(sender) || sender === 'mwickenburg') continue
+    const chId = m.channel?.id
+    if (!chId) continue
     const chName = m.channel?.name || '?'
+    // Thread ts if in a thread, else the message's own ts
+    const threadTs = m.thread_ts || m.ts
+    const key = `${chId}:${threadTs}`
+    if (seen.has(key)) continue
+    seen.add(key)
     mentions.push({
       sender,
       channel: chName.startsWith('U') ? 'DM' : `#${chName}`,
-      text: (m.text || '').slice(0, 120),
+      channelName: chName,
+      text: await cleanMentions((m.text || '').slice(0, 120)),
+      chId,
+      threadTs,
+      isThread: !!m.thread_ts,
     })
   }
+
+  // Fetch thread context for each mention (up to 5)
+  for (const mention of mentions.slice(0, 5)) {
+    const context = []
+    if (mention.isThread) {
+      const replies = await slack('conversations.replies', { channel: mention.chId, ts: mention.threadTs, limit: 10 })
+      if (replies.ok) {
+        for (const r of (replies.messages || []).slice(-5)) {
+          const who = r.user === USER_ID ? 'me' : await resolveUser(r.user)
+          context.push({ who, text: await cleanMentions((r.text || '').slice(0, 200)), ts: r.ts })
+        }
+      }
+    } else {
+      // Top-level message — fetch surrounding channel context
+      const h = await slack('conversations.history', { channel: mention.chId, latest: String(parseFloat(mention.threadTs) + 1), limit: 5 })
+      if (h.ok) {
+        for (const msg of (h.messages || []).reverse()) {
+          if (msg.subtype) continue
+          const who = msg.user === USER_ID ? 'me' : await resolveUser(msg.user)
+          context.push({ who, text: await cleanMentions((msg.text || '').slice(0, 200)), ts: msg.ts })
+        }
+      }
+    }
+    mention.context = context
+  }
+
   return mentions
 }
 
@@ -196,7 +264,7 @@ export async function scanThreadActivity(since) {
     const context = []
     for (const r of msgs.slice(-10)) {
       const who = r.user === USER_ID ? 'me' : await resolveUser(r.user)
-      context.push({ who, text: (r.text || '').slice(0, 200), ts: r.ts })
+      context.push({ who, text: await cleanMentions((r.text || '').slice(0, 200)), ts: r.ts })
     }
 
     const latest = newReplies[newReplies.length - 1]

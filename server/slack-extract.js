@@ -236,6 +236,9 @@ export async function fetchChannelMessages(channel) {
     text: await resolveMentions((m.text || '').slice(0, 500), nameMap),
     ts: m.ts,
     isUnread: cursor ? parseFloat(m.ts) > parseFloat(cursor) : false,
+    replyCount: m.reply_count || 0,
+    threadTs: m.thread_ts || null,
+    latestReplyTs: m.latest_reply || null,
   })))
   const unreadCount = mapped.filter(m => m.isUnread).length
   const latestTs = messages.length > 0 ? messages[messages.length - 1].ts : null
@@ -248,4 +251,35 @@ export async function fetchChannelMessages(channel) {
     unreadCount,
     latestTs,
   }
+}
+
+/**
+ * Fetch thread replies within a DM channel. Same as fetchThreadMessages but for
+ * threads that exist inside a DM conversation (not a channel thread).
+ */
+export async function fetchDMThreadReplies(channel, threadTs) {
+  const threadRes = await slack('conversations.replies', { channel, ts: threadTs, limit: 50 })
+  if (!threadRes.ok) {
+    throw new Error(`Failed to fetch DM thread: ${threadRes.error}`)
+  }
+
+  const messages = threadRes.messages || []
+  // Skip the parent message (index 0) — only return replies
+  const replies = messages.slice(1)
+  if (replies.length === 0) return { messages: [] }
+
+  const userIds = [...new Set(replies.map(m => m.user).filter(Boolean))]
+  const nameMap = {}
+  await Promise.all(userIds.map(async uid => {
+    nameMap[uid] = await resolveUser(uid)
+  }))
+
+  const mapped = await Promise.all(replies.map(async m => ({
+    who: nameMap[m.user] || 'unknown',
+    isMe: m.user === USER_ID,
+    text: await resolveMentions((m.text || '').slice(0, 500), nameMap),
+    ts: m.ts,
+  })))
+
+  return { messages: mapped }
 }

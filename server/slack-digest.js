@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync } from 'fs'
 import { resolve } from 'path'
 import { readData, saveData, createTask } from './store.js'
 import { SLACK_TOKEN, INITIAL_LOOKBACK_HOURS } from './slack-api.js'
-import { analyzeCrashes, analyzeDM, analyzeThread, analyzeIncidentChannel, clearAnalysisCache } from './slack-llm.js'
+import { analyzeCrashes, analyzeDM, analyzeThread, analyzeIncidentChannel, generateSuggestion, clearAnalysisCache } from './slack-llm.js'
 import { scanUnrepliedDMs, scanMentions, scanCrashes, scanThreadActivity, scanNewIncidents, readIncidentChannelMessages } from './slack-scanners.js'
 
 // --- Acknowledgment state (persisted to disk) ---
@@ -84,8 +84,11 @@ async function updateDigest() {
           notUrgent.push(dm.person)
         } else if (urgentMatch) {
           urgent.push({ person: dm.person, summary: urgentMatch[1].trim(), thread, chId: dm.chId })
+        } else if (!raw) {
+          // LLM failed (null) — default to not urgent rather than surfacing noise
+          notUrgent.push(dm.person)
         } else {
-          urgent.push({ person: dm.person, summary: raw || dm.lastMsg, thread, chId: dm.chId })
+          urgent.push({ person: dm.person, summary: raw, thread, chId: dm.chId })
         }
       }
       for (const u of urgent) {
@@ -96,12 +99,22 @@ async function updateDigest() {
       }
     }
 
-    // @mentions
+    // @mentions — individual items with thread context
     if (mentions.length > 0) {
-      const senders = [...new Set(mentions.map(m => m.sender))].slice(0, 3).join(', ')
-      const extra = mentions.length > 3 ? ` +${mentions.length - 3}` : ''
-      const rawText = mentions.slice(0, 5).map(m => `${m.sender} in ${m.channel}: ${m.text}`).join('\n')
-      items.push({ text: `@mentions: ${mentions.length} (${senders}${extra})`, rawText, context: 'slack-mentions', priority: 2 })
+      for (const m of mentions) {
+        const thread = (m.context || []).map(c => ({
+          who: c.who, text: (c.text || '').slice(0, 200),
+        }))
+        const slackRef = m.isThread ? `${m.chId}/${m.threadTs}` : m.chId
+        items.push({
+          text: `${m.sender} in ${m.channel}: ${m.text}`,
+          slackThread: thread.length > 0 ? thread : undefined,
+          slackRef,
+          from: m.sender,
+          context: 'slack-mentions',
+          priority: 2,
+        })
+      }
     }
 
     // Threads — LLM triage into ACTION_NEEDED / FYI
@@ -168,6 +181,21 @@ async function updateDigest() {
       if (dismissedSlackRefs.has(item.text)) return false
       return true
     })
+
+    // Generate LLM suggestions for actionable items with thread context
+    const suggestionTargets = filteredItems.filter(i => i.priority > 0 && i.slackThread?.length > 0)
+    if (suggestionTargets.length > 0) {
+      const suggestions = await Promise.all(
+        suggestionTargets.map(i => generateSuggestion(
+          i.slackRef || i.text,
+          i.slackThread.map((m, idx) => ({ ...m, ts: String(idx) })),
+          i.text
+        ))
+      )
+      for (let j = 0; j < suggestionTargets.length; j++) {
+        if (suggestions[j]) suggestionTargets[j].suggestion = suggestions[j]
+      }
+    }
 
     // Update pulse list
     const data = readData()

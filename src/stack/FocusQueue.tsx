@@ -5,7 +5,7 @@ import { NewItemFlow, type SlackContext } from './NewItemFlow'
 import { RescheduleInput } from './RescheduleInput'
 import { SlackThreadPreview } from './SlackThreadPreview'
 import { evaluateAlerts, alertStyle } from './focusAlerts'
-import { ENV_COLORS, openFleetEnv } from './focusShared'
+import { ENV_COLORS, openFleetEnv, envLabel } from './focusShared'
 
 interface FleetEnv {
   env: string
@@ -30,6 +30,7 @@ interface FocusResponse {
     isFireDrill?: boolean
     slackThread?: { who: string; text: string }[] | null
     slackRef?: string | null
+    suggestion?: string | null
     slackContext?: { label: string; ref: string }[] | null
     env?: string | null
     claudeLinks?: { label: string; ref: string; idx: number }[] | null
@@ -95,7 +96,7 @@ function EnvControls({ taskId, env, label, isLinked, onSetEnv }: {
             title={isLinked ? 'Open environment' : 'Not linked — click to open env & copy /link'}
           >
             <span>&#x2303;</span>
-            <span>{env.replace('env', '')}</span>
+            <span>{envLabel(env)}</span>
           </button>
           <button
             onClick={() => setShowPicker(!showPicker)}
@@ -133,7 +134,7 @@ function EnvControls({ taskId, env, label, isLinked, onSetEnv }: {
                     : `bg-gray-50 dark:bg-white/[0.04] text-gray-400 dark:text-gray-500 border-gray-200/60 dark:border-white/[0.08]`
                 }`}
               >
-                {e.replace('env', '')}
+                {envLabel(e)}
               </button>
             )
           })}
@@ -488,7 +489,9 @@ export function FocusQueue() {
           return (
             <>
               <div className="flex items-center gap-3">
-                <h1 className="text-[24px] leading-[1.35] font-medium text-gray-800 dark:text-gray-100">
+                <h1 className={`text-[24px] leading-[1.35] font-medium ${
+                  top!.kind === 'slack' ? 'text-gray-500 dark:text-gray-400' : 'text-gray-800 dark:text-gray-100'
+                }`}>
                   {top!.label}
                 </h1>
                 {alerts.map((alert, i) => {
@@ -511,7 +514,7 @@ export function FocusQueue() {
                       }
                     >
                       <span className="font-mono text-[16px]">&#x2303;</span>
-                      <span className="font-mono">{envKey.replace('env', '')}</span>
+                      <span className="font-mono">{envLabel(envKey)}</span>
                     </span>
                   )
                 })()}
@@ -525,9 +528,41 @@ export function FocusQueue() {
           )
         })()}
 
+        {/* LLM suggestion — actionable advice between title and Slack panel */}
+        {top!.kind === 'slack' && top!.suggestion && (
+          <p className="mt-4 text-[19px] text-gray-700 dark:text-gray-200 leading-relaxed">
+            {top!.suggestion}
+          </p>
+        )}
+
+        {/* Hotkey hints + env controls — above Slack context for slack cards */}
+        {top!.kind === 'slack' && (() => {
+          const em = top!.emphasizedHotkeys || []
+          const emphasisOf = (label: string): HotkeyEmphasis =>
+            em[0] === label ? 'primary' : em[1] === label ? 'secondary' : 'default'
+          const snoozeMins = data?.snoozeMinutes || 30
+          const allHotkeys: { keys: string; label: string }[] = [
+            { keys: '\u2318\u21e7D', label: 'done' },
+            { keys: '\u2318\u21e7E', label: `snooze ${snoozeMins}m` },
+            { keys: '\u2318J', label: 'reschedule' },
+            { keys: '\u2318\u21e7C', label: 'create task' },
+          ]
+          const rank = { primary: 0, secondary: 1, default: 2 }
+          const sorted = [...allHotkeys].sort((a, b) =>
+            rank[emphasisOf(a.label)] - rank[emphasisOf(b.label)]
+          )
+          return (
+            <div className="mt-6 flex items-center gap-5">
+              {sorted.map(h => (
+                <HotkeyHint key={h.label} keys={h.keys} label={h.label} emphasis={emphasisOf(h.label)} />
+              ))}
+            </div>
+          )
+        })()}
+
         {/* Slack thread — reuse SlackThreadPreview for proper author resolution + timestamps */}
         {top!.kind === 'slack' && top!.slackRef && (
-          <div className="mt-4">
+          <div className="mt-8">
             <SlackThreadPreview ref_={top!.slackRef} label={top!.from || 'Slack'} defaultExpanded />
           </div>
         )}
@@ -571,8 +606,8 @@ export function FocusQueue() {
           </div>
         )}
 
-        {/* Hotkey hints + env controls */}
-        {(() => {
+        {/* Hotkey hints + env controls — only for non-slack cards (slack hotkeys are above) */}
+        {top!.kind !== 'slack' && (() => {
           const em = top!.emphasizedHotkeys || (top!.kind === 'task' ? ['done'] : [])
           const emphasisOf = (label: string): HotkeyEmphasis =>
             em[0] === label ? 'primary' : em[1] === label ? 'secondary' : 'default'
@@ -582,10 +617,6 @@ export function FocusQueue() {
             { keys: '\u2318\u21e7E', label: `snooze ${snoozeMins}m` },
             { keys: '\u2318J', label: 'reschedule' },
           ]
-          // Add create task hotkey for slack cards
-          if (top!.kind === 'slack') {
-            allHotkeys.push({ keys: '\u2318\u21e7C', label: 'create task' })
-          }
           const rank = { primary: 0, secondary: 1, default: 2 }
           const sorted = [...allHotkeys].sort((a, b) =>
             rank[emphasisOf(a.label)] - rank[emphasisOf(b.label)]
@@ -593,22 +624,20 @@ export function FocusQueue() {
           const taskEnv = top!.kind === 'task' ? (top!.env || null) : null
           const hasEnvControls = top!.kind === 'task'
           return (
-            <>
-              <div className="mt-8 flex items-center gap-5">
-                {sorted.map(h => (
-                  <HotkeyHint key={h.label} keys={h.keys} label={h.label} emphasis={emphasisOf(h.label)} />
-                ))}
-                {hasEnvControls && (
-                  <EnvControls
-                    taskId={top!.id}
-                    env={taskEnv}
-                    label={top!.label}
-                    isLinked={!!(top!.claudeLinks && top!.claudeLinks.length > 0)}
-                    onSetEnv={handleSetEnv}
-                  />
-                )}
-              </div>
-            </>
+            <div className="mt-8 flex items-center gap-5">
+              {sorted.map(h => (
+                <HotkeyHint key={h.label} keys={h.keys} label={h.label} emphasis={emphasisOf(h.label)} />
+              ))}
+              {hasEnvControls && (
+                <EnvControls
+                  taskId={top!.id}
+                  env={taskEnv}
+                  label={top!.label}
+                  isLinked={!!(top!.claudeLinks && top!.claudeLinks.length > 0)}
+                  onSetEnv={handleSetEnv}
+                />
+              )}
+            </div>
           )
         })()}
       </div>

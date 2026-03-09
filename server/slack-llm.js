@@ -3,38 +3,105 @@
  */
 
 import { appendFileSync } from 'fs'
-import { ANTHROPIC_API_KEY, LLM_LOG } from './slack-api.js'
+import { ANTHROPIC_API_KEY, OPENAI_API_KEY, LLM_LOG } from './slack-api.js'
+
+const MAX_RETRIES = 2
+const RETRY_DELAY = 3000
+
+async function callAnthropic(prompt) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 150,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  })
+  const data = await res.json()
+  if (data.type === 'error') {
+    const errType = data.error?.type || 'unknown'
+    throw new Error(`anthropic:${errType}: ${data.error?.message || 'unknown'}`)
+  }
+  return {
+    result: data.content?.[0]?.text?.trim() || null,
+    model: 'claude-sonnet-4-6',
+    input_tokens: data.usage?.input_tokens,
+    output_tokens: data.usage?.output_tokens,
+  }
+}
+
+async function callOpenAI(prompt) {
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: 'gpt-4.1',
+      max_tokens: 150,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  })
+  const data = await res.json()
+  if (data.error) {
+    throw new Error(`openai:${data.error.type || 'error'}: ${data.error.message || 'unknown'}`)
+  }
+  return {
+    result: data.choices?.[0]?.message?.content?.trim() || null,
+    model: 'gpt-4.1',
+    input_tokens: data.usage?.prompt_tokens,
+    output_tokens: data.usage?.completion_tokens,
+  }
+}
 
 export async function callSonnet(prompt) {
-  if (!ANTHROPIC_API_KEY) return null
+  if (!ANTHROPIC_API_KEY && !OPENAI_API_KEY) return null
   const ts = new Date().toISOString()
-  try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 150,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    })
-    const data = await res.json()
-    const result = data.content?.[0]?.text?.trim() || null
-    const usage = data.usage || {}
-    appendFileSync(LLM_LOG, JSON.stringify({
-      ts, model: 'claude-sonnet-4-6', prompt_tokens: usage.input_tokens, output_tokens: usage.output_tokens,
-      prompt: prompt.slice(0, 300), result, cached: false,
-    }) + '\n')
-    return result
-  } catch (err) {
-    appendFileSync(LLM_LOG, JSON.stringify({ ts, error: err.message, prompt: prompt.slice(0, 300) }) + '\n')
-    console.error('[slack-digest] LLM error:', err.message)
-    return null
+
+  // Try Anthropic first with one retry, then fall back to OpenAI
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const { result, model, input_tokens, output_tokens } = await callAnthropic(prompt)
+      appendFileSync(LLM_LOG, JSON.stringify({
+        ts, model, prompt_tokens: input_tokens, output_tokens,
+        prompt: prompt.slice(0, 300), result, cached: false,
+      }) + '\n')
+      return result
+    } catch (err) {
+      const isOverloaded = err.message.includes('overloaded') || err.message.includes('rate_limit')
+      if (isOverloaded && attempt < MAX_RETRIES) {
+        console.error(`[slack-llm] Anthropic ${err.message} (attempt ${attempt + 1}), retrying...`)
+        await new Promise(r => setTimeout(r, RETRY_DELAY))
+        continue
+      }
+      // Anthropic failed — try OpenAI fallback
+      if (OPENAI_API_KEY) {
+        console.error(`[slack-llm] Anthropic failed (${err.message}), falling back to GPT-4.1`)
+        try {
+          const { result, model, input_tokens, output_tokens } = await callOpenAI(prompt)
+          appendFileSync(LLM_LOG, JSON.stringify({
+            ts, model, prompt_tokens: input_tokens, output_tokens,
+            prompt: prompt.slice(0, 300), result, cached: false, fallback: true,
+          }) + '\n')
+          return result
+        } catch (oaiErr) {
+          appendFileSync(LLM_LOG, JSON.stringify({ ts, error: `both failed: anthropic=${err.message}, openai=${oaiErr.message}`, prompt: prompt.slice(0, 300) }) + '\n')
+          console.error(`[slack-llm] Both providers failed: ${oaiErr.message}`)
+          return null
+        }
+      }
+      appendFileSync(LLM_LOG, JSON.stringify({ ts, error: err.message, prompt: prompt.slice(0, 300) }) + '\n')
+      console.error(`[slack-llm] Anthropic failed, no fallback: ${err.message}`)
+      return null
+    }
   }
+  return null
 }
 
 // analysisCache: keyed by category, stores { fingerprint, result }
@@ -107,6 +174,20 @@ export async function analyzeThread(threadKey, channel, context) {
       .map(m => `${m.who}: ${m.text}`)
       .join('\n')
     const prompt = `I am "me" in this Slack thread in #${channel}. Summarize what's happening and if I need to act.\n\n${transcript}\n\nYou MUST respond with EXACTLY one of these two formats (first word must be ACTION_NEEDED or FYI):\nACTION_NEEDED: <summary max 12 words>\nFYI: <summary max 12 words>\n\nACTION_NEEDED = someone asked me something, waiting on me, or I need to respond.\nFYI = status update, someone else handled it, or just informational.`
+    return callSonnet(prompt)
+  })
+}
+
+export async function generateSuggestion(cacheKey, context, itemText) {
+  if (context.length === 0) return null
+  const fingerprint = context.map(m => m.ts || '').sort().join(',') + itemText
+
+  return cachedAnalyze(`suggest:${cacheKey}`, fingerprint, () => {
+    const transcript = context
+      .sort((a, b) => parseFloat(a.ts || '0') - parseFloat(b.ts || '0'))
+      .map(m => `${m.who}: ${(m.text || '').slice(0, 200)}`)
+      .join('\n')
+    const prompt = `I am "me" in this Slack conversation. Based on the context, suggest what I should do next in 1-2 sentences. Be specific and actionable — e.g. "Reply confirming the timeline" or "Delegate to X since they own this area". No markdown, no quotes.\n\nItem: ${itemText}\n\nConversation:\n${transcript}`
     return callSonnet(prompt)
   })
 }

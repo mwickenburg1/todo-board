@@ -123,23 +123,26 @@ function computeQueue(data) {
     else if (p.context === 'slack-crashes') score = 1000
     else continue
 
-    slackItems.push({ id: p.id, score: score + (p.priority * 10), text: p.text, slackThread: p.slackThread, slackRef: p.slackRef, context: p.context })
+    slackItems.push({ id: p.id, score: score + (p.priority * 10), text: p.text, slackThread: p.slackThread, slackRef: p.slackRef, context: p.context, from: p.from || null, suggestion: p.suggestion || null })
   }
 
   // Each urgent Slack item is its own card
   for (const s of slackItems) {
     const colonIdx = s.text.indexOf(': ')
-    const from = colonIdx > 0 ? s.text.slice(0, colonIdx) : null
+    const from = s.from || (colonIdx > 0 ? s.text.slice(0, colonIdx) : null)
     const summary = colonIdx > 0 ? s.text.slice(colonIdx + 2) : s.text
     const verbMap = { 'slack-dms': 'DM', 'slack-mentions': 'Mention', 'slack-threads': 'Thread', 'slack-incidents': 'Incident', 'slack-crashes': 'Crashes' }
+    // Clean Slack user mention markup: <@U123|Name> → @Name, <@U123> → @user
+    const cleanLabel = summary.replace(/<@[A-Z0-9]+\|([^>]+)>/g, '@$1').replace(/<@[A-Z0-9]+>/g, '@user')
     items.push({
       id: s.id, kind: 'slack', score: s.score,
-      label: summary,
+      label: cleanLabel,
       actionVerb: verbMap[s.context] || 'Slack',
       from, list: 'pulse',
       emphasizedHotkeys: ['done', 'create task'],
       slackThread: s.slackThread || null,
       slackRef: s.slackRef || null,
+      suggestion: s.suggestion || null,
     })
   }
 
@@ -281,7 +284,7 @@ function computeQueue(data) {
 
   // Filter snoozed items, sort by score
   const effective = items
-    .filter(item => !isSnoozed(item.id) && item.score > 0)
+    .filter(item => !isSnoozed(item.id) && !(item.slackRef && isSnoozed(item.slackRef)) && item.score > 0)
     .sort((a, b) => b.score - a.score)
 
   // If there's a promoted item, force it to position 0 (skip when priority sort is pending)
@@ -461,6 +464,8 @@ router.post('/snooze', (req, res) => {
     const effectiveMins = minutes || task?.snoozeMins || SNOOZE_MINUTES
     const until = Date.now() + effectiveMins * 60 * 1000
     snoozeItem(top.id, until, 'snooze')
+    // For slack items, also snooze by slackRef so it survives digest rescans (IDs change)
+    if (top.slackRef) snoozeItem(top.slackRef, until, 'snooze')
 
     res.json({ success: true, action: 'snoozed', item: top.label, minutes: effectiveMins, remaining: queue.length - 1 })
   } catch (err) {

@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { ENV_COLORS, StyledTaskText } from './focusShared'
+import { ENV_COLORS, StyledTaskText, envNum } from './focusShared'
 
 interface PriorityTask {
   id: number
@@ -71,7 +71,7 @@ function PrioritySortRow({ task, idx, isDragOver, isDragging, isLocked, onDragOv
           ${envColors.bg} border ${envColors.border}
           text-[12px] font-medium font-mono ${envColors.text}
         `}>
-          <span className="text-[13px]">&#x2303;</span>{task.env.replace('env', '')}
+          <span className="text-[13px]">&#x2303;</span>{envNum(task.env)}
         </span>
       )}
 

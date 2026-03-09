@@ -1,4 +1,5 @@
 import type { EnvSlotInfo, EnvStatusRemote } from './types'
+import { envLabel } from './focusShared'
 
 const ENV_ORDER = ['env1', 'env2', 'env3', 'env4', 'env5', 'env6', 'env7', 'env8', 'env9', 'env10', 'sync']
 
@@ -20,7 +21,7 @@ export function EnvStatusBar({ envSlots, remoteStatus }: {
               className={`flex items-center gap-1.5 ${isActive ? 'text-gray-600' : 'text-gray-300'}`}
             >
               <span className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-emerald-400' : 'bg-gray-200'}`} />
-              <span className="font-medium uppercase">{slot}</span>
+              <span className="font-medium uppercase">{slot === 'sync' ? slot : envLabel(slot)}</span>
               {info?.item && (
                 <span className="text-gray-400 truncate max-w-[60px]">{info.item.text}</span>
               )}

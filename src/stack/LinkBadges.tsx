@@ -200,7 +200,7 @@ function ClaudeEnvBadges({ typeLinks, allLinks, onRemove }: {
     >
       {envNums.map(n => (
         <span key={n} className={`text-[10px] font-bold leading-none ${ENV_NUM_COLORS[n] || 'text-gray-400'}`}>
-          {n}
+          {n === '10' ? '^0' : n}
         </span>
       ))}
       {showPopover && (
@@ -220,7 +220,7 @@ function ClaudeEnvBadges({ typeLinks, allLinks, onRemove }: {
                 className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 dark:hover:bg-gray-700 group/link"
               >
                 {envNum && (
-                  <span className={`text-[10px] font-bold shrink-0 ${ENV_NUM_COLORS[envNum] || 'text-gray-400'}`}>{envNum}</span>
+                  <span className={`text-[10px] font-bold shrink-0 ${ENV_NUM_COLORS[envNum] || 'text-gray-400'}`}>{envNum === '10' ? '^0' : envNum}</span>
                 )}
                 <span className="flex-1 text-xs text-gray-600 dark:text-gray-300 truncate">{link.label || link.ref}</span>
                 {onRemove && (

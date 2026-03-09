@@ -18,7 +18,9 @@ let snoozed = new Map()
 try {
   const saved = JSON.parse(readFileSync(SNOOZE_PATH, 'utf8'))
   for (const [id, entry] of Object.entries(saved)) {
-    snoozed.set(Number(id), entry)
+    // String keys (slackRef) stay as strings, numeric IDs become numbers
+    const key = /^\d+$/.test(id) ? Number(id) : id
+    snoozed.set(key, entry)
   }
 } catch {}
 

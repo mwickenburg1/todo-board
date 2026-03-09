@@ -12,7 +12,7 @@ import eventsRouter from './routes/events.js'
 import envStatusRouter from './routes/env-status.js'
 import focusQueueRouter from './focus-queue.js'
 import { startSlackDigest, acknowledgeDigest, resetAck } from './slack-digest.js'
-import { parseSlackUrl, extractThreadContext, fetchThreadMessages, fetchChannelMessages, setReadCursor, getAllReadCursors } from './slack-extract.js'
+import { parseSlackUrl, extractThreadContext, fetchThreadMessages, fetchChannelMessages, fetchDMThreadReplies, setReadCursor, getAllReadCursors } from './slack-extract.js'
 import { markRoutineChecked, isRoutineCheckedToday, clearStaleChecks } from './routine-state.js'
 import { getSnoozeMap } from './snooze-state.js'
 import { ROUTINE_ITEMS } from './routine-items.js'
@@ -178,6 +178,17 @@ app.get('/api/slack-thread/:channel/:ts', async (req, res) => {
     res.json(result)
   } catch (err) {
     console.error('[slack-thread] error:', err.message)
+    res.status(502).json({ error: err.message })
+  }
+})
+
+app.get('/api/slack-channel/:channel/thread/:threadTs', async (req, res) => {
+  try {
+    const { channel, threadTs } = req.params
+    const result = await fetchDMThreadReplies(channel, threadTs)
+    res.json(result)
+  } catch (err) {
+    console.error('[slack-dm-thread] error:', err.message)
     res.status(502).json({ error: err.message })
   }
 })

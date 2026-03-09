@@ -10,6 +10,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 export const SLACK_TOKEN = process.env.SLACK_USER_TOKEN
 export const SLACK_SEARCH_TOKEN = process.env.SLACK_SEARCH_TOKEN || SLACK_TOKEN
 export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY
+export const OPENAI_API_KEY = process.env.OPENAI_API_KEY
 export const USER_ID = 'U02BMLFJJ64'
 export const CRASHES_CHANNEL = 'C09TBCMEPPA'
 export const INCIDENTS_CHANNEL = 'C07QTH1005N'
@@ -39,6 +40,30 @@ export async function resolveUser(uid) {
   } catch {}
   userCache[uid] = uid
   return uid
+}
+
+/**
+ * Clean Slack mention markup in text for LLM prompts.
+ * <@U123|Name> → @Name, <@U123> → @resolvedName
+ * Also cleans channel refs: <#C123|channel> → #channel
+ */
+export async function cleanMentions(text) {
+  if (!text) return text
+  // First pass: <@UID|DisplayName> → @DisplayName (no API call needed)
+  let cleaned = text.replace(/<@(U[A-Z0-9]+)\|([^>]+)>/g, (_, _id, name) => `@${name}`)
+  // Second pass: <@UID> without display name → resolve via API
+  const bareRe = /<@(U[A-Z0-9]+)>/g
+  const bareIds = new Set()
+  let m
+  while ((m = bareRe.exec(cleaned)) !== null) bareIds.add(m[1])
+  if (bareIds.size > 0) {
+    const resolved = {}
+    await Promise.all([...bareIds].map(async id => { resolved[id] = await resolveUser(id) }))
+    cleaned = cleaned.replace(/<@(U[A-Z0-9]+)>/g, (_, id) => `@${resolved[id] || id}`)
+  }
+  // Channel refs: <#C123|name> → #name
+  cleaned = cleaned.replace(/<#C[A-Z0-9]+\|([^>]+)>/g, (_, name) => `#${name}`)
+  return cleaned
 }
 
 export function extractBlockText(blocks) {

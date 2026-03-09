@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { ENV_COLORS, ESCALATION_COLORS, StyledTaskText, REMOTE_ENVS, showToast, openFleetEnv } from './focusShared'
+import { ENV_COLORS, ESCALATION_COLORS, StyledTaskText, REMOTE_ENVS, showToast, openFleetEnv, envNum } from './focusShared'
 
 interface ClaudeLink {
   label: string
@@ -344,7 +344,7 @@ function FleetEnvCell({ n, tasks, onSave, onUnlink, onDone, onEscalate, onAdd, o
         title={canAdd ? 'Add item' : undefined}
       >
         <span className={canAdd ? 'group-hover/env:hidden' : ''}>
-          <span className="text-[16px]">&#x2303;</span>{n}
+          <span className="text-[16px]">&#x2303;</span>{envNum(`env${n}`)}
         </span>
         {canAdd && <span className="hidden group-hover/env:inline text-[22px] leading-none">+</span>}
       </span>
