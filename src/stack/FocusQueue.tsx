@@ -1013,7 +1013,7 @@ export function FocusQueue() {
   }, [fetchQueue])
 
   // Cmd+N (new item), Cmd+J (reschedule), Cmd+Shift+C (create task from Slack)
-  // Cmd+Shift+F (fleet), Cmd+P (priorities), Cmd+Shift+G (PRs), Cmd+Shift+L (deadlines)
+  // Cmd+Shift+F (fleet), Cmd+P (priorities), Cmd+Shift+G (PRs), Cmd+Shift+' (deadlines)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 'n') {
@@ -1040,7 +1040,7 @@ export function FocusQueue() {
         e.preventDefault()
         triggerPRs()
       }
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'l' || e.key === 'L')) {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "'") {
         e.preventDefault()
         triggerDeadlines()
       }
@@ -1246,7 +1246,7 @@ export function FocusQueue() {
             onClick={triggerDeadlines}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/[0.04] border border-gray-200/80 dark:border-white/[0.08] text-[12px] font-medium text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:border-gray-300 dark:hover:border-white/[0.15] transition-colors cursor-pointer"
           >
-            <span className="font-mono opacity-60">⌘⇧L</span>
+            <span className="font-mono opacity-60">⌘⇧'</span>
             <span>deadlines</span>
           </button>
           <button
@@ -1311,7 +1311,7 @@ export function FocusQueue() {
           onClick={triggerDeadlines}
           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/[0.04] border border-gray-200/80 dark:border-white/[0.08] text-[12px] font-medium text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:border-gray-300 dark:hover:border-white/[0.15] transition-colors cursor-pointer opacity-50 hover:opacity-100"
         >
-          <span className="font-mono opacity-60">⌘⇧L</span>
+          <span className="font-mono opacity-60">⌘⇧'</span>
           <span>deadlines</span>
         </button>
         <button
