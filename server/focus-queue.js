@@ -888,7 +888,7 @@ router.post('/reschedule', async (req, res) => {
 // POST /api/focus/trigger-fleet — toggle on-demand fleet view
 router.post('/trigger-fleet', (req, res) => {
   pendingFleet = !pendingFleet
-  if (pendingFleet) { pendingPrioritySort = false; pendingPRs = false; pendingDeadlines = false }
+  if (pendingFleet) { pendingPrioritySort = false; pendingPRs = false; pendingDeadlines = false; promotedId = null }
   res.json({ success: true, active: pendingFleet })
 })
 
@@ -896,20 +896,21 @@ router.post('/trigger-fleet', (req, res) => {
 router.post('/trigger-priority', (req, res) => {
   pendingPrioritySort = !pendingPrioritySort
   if (pendingPrioritySort) { pendingFleet = false; pendingPRs = false; pendingDeadlines = false }
+  else { promotedId = null }
   res.json({ success: true, active: pendingPrioritySort })
 })
 
 // POST /api/focus/trigger-prs — toggle on-demand PR dashboard view
 router.post('/trigger-prs', (req, res) => {
   pendingPRs = !pendingPRs
-  if (pendingPRs) { pendingFleet = false; pendingPrioritySort = false; pendingDeadlines = false; fetchPRs() }
+  if (pendingPRs) { pendingFleet = false; pendingPrioritySort = false; pendingDeadlines = false; promotedId = null; fetchPRs() }
   res.json({ success: true, active: pendingPRs })
 })
 
 // POST /api/focus/trigger-deadlines — toggle on-demand deadline view
 router.post('/trigger-deadlines', (req, res) => {
   pendingDeadlines = !pendingDeadlines
-  if (pendingDeadlines) { pendingFleet = false; pendingPrioritySort = false; pendingPRs = false }
+  if (pendingDeadlines) { pendingFleet = false; pendingPrioritySort = false; pendingPRs = false; promotedId = null }
   res.json({ success: true, active: pendingDeadlines })
 })
 

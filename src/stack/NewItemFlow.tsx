@@ -14,13 +14,13 @@ export interface SlackContext {
 
 interface NewItemFlowProps {
   onClose: () => void
-  onCreate: (text: string, type?: ItemType, snoozeMins?: number, slackContext?: SlackContext) => void
+  onCreate: (text: string, type?: ItemType, snoozeMins?: number, slackContext?: SlackContext, deadline?: string) => void
   isCreateTask?: boolean
   prefill?: string
 }
 
 const TYPE_OPTIONS: { type: ItemType; label: string; keys: string; color: string }[] = [
-  { type: 'today', label: 'Today', keys: 'T', color: 'text-blue-500 dark:text-blue-400' },
+  { type: 'today', label: 'Priority', keys: 'T', color: 'text-blue-500 dark:text-blue-400' },
   { type: 'fire-drill', label: 'Fire drill', keys: 'F', color: 'text-red-500 dark:text-red-400' },
   { type: 'backlog', label: 'Backlog', keys: 'B', color: 'text-gray-500 dark:text-gray-400' },
 ]
@@ -33,10 +33,16 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
   const [text, setText] = useState(prefill)
   const [selectedIdx, setSelectedIdx] = useState(0)
   const [snoozeMins, setSnoozeMins] = useState(5)
-  const [focusArea, setFocusArea] = useState<'text' | 'type' | 'snooze'>('text')
+  const [focusArea, setFocusArea] = useState<'text' | 'type' | 'snooze' | 'deadline'>('text')
   const [slackContext, setSlackContext] = useState<SlackContext | null>(null)
   const [slackLoading, setSlackLoading] = useState(false)
+  const [deadlineText, setDeadlineText] = useState('')
+  const [deadlineIso, setDeadlineIso] = useState<string | null>(null)
+  const [deadlinePreview, setDeadlinePreview] = useState<string | null>(null)
+  const [deadlineParsing, setDeadlineParsing] = useState(false)
+  const [deadlineError, setDeadlineError] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const deadlineRef = useRef<HTMLInputElement>(null)
   const backdropRef = useRef<HTMLDivElement>(null)
 
   const selectedType = TYPE_OPTIONS[selectedIdx].type
@@ -54,8 +60,31 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
     const trimmed = text.trim()
     if (!trimmed) return
     const snoose = selectedType === 'fire-drill' ? snoozeMins : undefined
-    onCreate(trimmed, selectedType, snoose, slackContext || undefined)
+    onCreate(trimmed, selectedType, snoose, slackContext || undefined, deadlineIso || undefined)
     onClose()
+  }
+
+  const parseDeadline = async () => {
+    if (!deadlineText.trim() || deadlineParsing) return
+    setDeadlineParsing(true)
+    setDeadlineError(null)
+    try {
+      const res = await fetch('/api/focus/parse-date', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: deadlineText.trim() }),
+      })
+      const result = await res.json()
+      if (result.success && result.iso) {
+        setDeadlinePreview(result.label)
+        setDeadlineIso(result.iso)
+      } else {
+        setDeadlineError('Could not parse')
+      }
+    } catch {
+      setDeadlineError('Failed')
+    }
+    setDeadlineParsing(false)
   }
 
   const extractSlack = (url: string) => {
@@ -136,10 +165,11 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
           setFocusArea('text')
           return
         }
-        // Down goes to snooze if fire drill, otherwise no-op
+        // Down goes to snooze if fire drill, otherwise deadline
         if (e.key === 'ArrowDown') {
           e.preventDefault()
           if (showSnooze) setFocusArea('snooze')
+          else { setFocusArea('deadline'); setTimeout(() => deadlineRef.current?.focus(), 0) }
           return
         }
         // Shortcut keys: T, F, B
@@ -155,6 +185,12 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
         if (e.key === 'ArrowUp') {
           e.preventDefault()
           setFocusArea('type')
+          return
+        }
+        if (e.key === 'ArrowDown') {
+          e.preventDefault()
+          setFocusArea('deadline')
+          setTimeout(() => deadlineRef.current?.focus(), 0)
           return
         }
         if (e.key === 'ArrowLeft') {
@@ -269,6 +305,50 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
               <kbd className="px-1.5 py-0.5 rounded-[4px] font-mono text-[10px] bg-gray-100 dark:bg-white/[0.06] border border-gray-200/80 dark:border-white/[0.08]">&#x2190;</kbd>
               <kbd className="px-1.5 py-0.5 rounded-[4px] font-mono text-[10px] bg-gray-100 dark:bg-white/[0.06] border border-gray-200/80 dark:border-white/[0.08]">&#x2192;</kbd>
             </span>
+          </div>
+        )}
+
+        {/* Deadline input */}
+        {focusArea !== 'text' && (
+          <div className={`border-t border-gray-100 dark:border-white/[0.06] px-6 py-3 flex items-center gap-3 transition-colors ${
+            focusArea === 'deadline' ? 'bg-gray-50/50 dark:bg-white/[0.02]' : ''
+          }`}>
+            <span className="text-[12px] text-gray-400 dark:text-gray-500 shrink-0">Due</span>
+            {deadlinePreview ? (
+              <div className="flex items-center gap-2 flex-1">
+                <span className="text-[13px] text-gray-700 dark:text-gray-200">{deadlinePreview}</span>
+                <button
+                  onClick={() => { setDeadlinePreview(null); setDeadlineIso(null); setDeadlineText(''); setTimeout(() => deadlineRef.current?.focus(), 0) }}
+                  className="text-[11px] text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 cursor-pointer px-1"
+                >
+                  &times;
+                </button>
+              </div>
+            ) : (
+              <>
+                <input
+                  ref={deadlineRef}
+                  value={deadlineText}
+                  onChange={e => { setDeadlineText(e.target.value); setDeadlineError(null) }}
+                  onFocus={() => setFocusArea('deadline')}
+                  onKeyDown={e => {
+                    e.stopPropagation()
+                    if (e.key === 'Enter') { e.preventDefault(); parseDeadline() }
+                    if (e.key === 'Escape') { e.preventDefault(); onClose() }
+                    if (e.key === 'ArrowUp') { e.preventDefault(); setFocusArea(showSnooze ? 'snooze' : 'type') }
+                    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); submit() }
+                  }}
+                  onKeyUp={e => e.stopPropagation()}
+                  placeholder="tomorrow, fri 2pm, midday, EOD..."
+                  className={`flex-1 bg-transparent text-[13px] text-gray-800 dark:text-gray-100 outline-none placeholder-gray-400 dark:placeholder-gray-600 ${
+                    focusArea !== 'deadline' ? 'opacity-50' : ''
+                  }`}
+                />
+                {deadlineParsing && <span className="text-[11px] text-gray-400 animate-pulse">...</span>}
+                {deadlineError && <span className="text-[11px] text-red-400">{deadlineError}</span>}
+              </>
+            )}
+            <span className="text-[11px] text-gray-300 dark:text-gray-600 shrink-0">optional</span>
           </div>
         )}
 

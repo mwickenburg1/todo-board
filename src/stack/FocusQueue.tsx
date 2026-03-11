@@ -1044,7 +1044,7 @@ export function FocusQueue() {
     }).catch(() => {})
   }, [fetchQueue])
 
-  const handleCreate = useCallback((text: string, type?: 'fire-drill' | 'today' | 'backlog', snoozeMins?: number, pastedSlack?: SlackContext) => {
+  const handleCreate = useCallback((text: string, type?: 'fire-drill' | 'today' | 'backlog', snoozeMins?: number, pastedSlack?: SlackContext, deadline?: string) => {
     const currentTop = dataRef.current?.top
     const isSlack = currentTop?.kind === 'slack'
     const slackRef = isSlack ? currentTop.slackRef : null
@@ -1074,6 +1074,13 @@ export function FocusQueue() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ type: 'slack_thread', ref: linkRef, label: linkLabel || '' }),
+        }))
+      }
+      if (result.created && result.promoted && deadline) {
+        promises.push(fetch(`/api/todos/${result.promoted}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deadline }),
         }))
       }
       return Promise.all(promises)
@@ -1414,7 +1421,13 @@ export function FocusQueue() {
 
         {/* Priority sort view */}
         {top!.kind === 'priority-sort' && top!.priorityTasks && (
-          <PrioritySortView tasks={top!.priorityTasks} onReorder={handleReorder} onDone={handleDone} />
+          <PrioritySortView tasks={top!.priorityTasks} onReorder={handleReorder} onDone={handleDone} onSetDeadline={(id, deadline) => {
+            fetch(`/api/todos/${id}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ deadline }),
+            }).then(() => { lastJsonRef.current = ''; fetchQueue() }).catch(() => {})
+          }} onRename={handleUpdateTask} />
         )}
 
         {/* Rescheduled indicator */}
