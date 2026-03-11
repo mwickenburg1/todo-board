@@ -56,11 +56,24 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
     if (focusArea === 'text') inputRef.current?.focus()
   }, [focusArea])
 
-  const submit = () => {
+  const submit = async () => {
     const trimmed = text.trim()
     if (!trimmed) return
+    // If there's unparsed deadline text, parse it first
+    let finalDeadline = deadlineIso
+    if (!finalDeadline && deadlineText.trim()) {
+      try {
+        const res = await fetch('/api/focus/parse-date', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: deadlineText.trim() }),
+        })
+        const result = await res.json()
+        if (result.success && result.iso) finalDeadline = result.iso
+      } catch { /* proceed without deadline */ }
+    }
     const snoose = selectedType === 'fire-drill' ? snoozeMins : undefined
-    onCreate(trimmed, selectedType, snoose, slackContext || undefined, deadlineIso || undefined)
+    onCreate(trimmed, selectedType, snoose, slackContext || undefined, finalDeadline || undefined)
     onClose()
   }
 
@@ -211,7 +224,7 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [focusArea, selectedIdx, text, snoozeMins, showSnooze]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [focusArea, selectedIdx, text, snoozeMins, showSnooze, deadlineIso, deadlineText]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div
@@ -333,10 +346,10 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
                   onFocus={() => setFocusArea('deadline')}
                   onKeyDown={e => {
                     e.stopPropagation()
+                    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); submit(); return }
                     if (e.key === 'Enter') { e.preventDefault(); parseDeadline() }
                     if (e.key === 'Escape') { e.preventDefault(); onClose() }
                     if (e.key === 'ArrowUp') { e.preventDefault(); setFocusArea(showSnooze ? 'snooze' : 'type') }
-                    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); submit() }
                   }}
                   onKeyUp={e => e.stopPropagation()}
                   placeholder="tomorrow, fri 2pm, midday, EOD..."

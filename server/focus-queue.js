@@ -609,7 +609,11 @@ router.get('/', (req, res) => {
 })
 
 // POST /api/focus/done — complete top item
+let lastDoneTs = 0
 router.post('/done', (req, res) => {
+  const now = Date.now()
+  if (now - lastDoneTs < 500) return res.json({ success: false, reason: 'too fast — debounced' })
+  lastDoneTs = now
   try {
     const data = readData()
     const queue = computeQueue(data)

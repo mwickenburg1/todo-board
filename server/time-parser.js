@@ -43,6 +43,8 @@ export async function parseNaturalTime(input) {
 
 Parse this time expression: "${input}"
 
+IMPORTANT: Always resolve to a FUTURE date/time unless the input explicitly says "last", "past", or "ago". This is for scheduling — the result must never be in the past.
+
 Respond with ONLY an ISO 8601 timestamp with the correct UTC offset for America/New_York (use -04:00 during EDT, -05:00 during EST). Nothing else.
 Example: 2026-06-15T14:00:00-04:00`
 
