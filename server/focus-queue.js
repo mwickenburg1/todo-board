@@ -474,6 +474,7 @@ function computeQueue(data) {
         id: t.id, text: t.text, env: t.env || null,
         escalation: t.escalation || 0, isFireDrill: !!t.isFireDrill,
         deadline: t.deadline || null, status: t.status,
+        snoozedUntil: isSnoozed(t.id) ? getSnoozeInfo(t.id)?.until : null,
       }))
     prioritySortItem.priorityTasks = dailyGoals
     prioritySortItem.label = 'Set priorities'
@@ -487,6 +488,7 @@ function computeQueue(data) {
         id: t.id, text: t.text, env: t.env || null,
         escalation: t.escalation || 0, isFireDrill: !!t.isFireDrill,
         deadline: t.deadline || null, status: t.status,
+        snoozedUntil: isSnoozed(t.id) ? getSnoozeInfo(t.id)?.until : null,
       }))
     items.push({
       id: -1, kind: 'priority-sort', score: 15001,

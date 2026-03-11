@@ -10,6 +10,7 @@ interface PriorityTask {
   isFireDrill: boolean
   deadline: string | null
   status?: string
+  snoozedUntil?: number | null
 }
 
 function DeadlineEditor({ taskId, onSet, onClose }: {
@@ -128,6 +129,7 @@ function PrioritySortRow({ task, idx, isDragOver, isDragging, isLocked, editingD
   const editRef = useRef<HTMLInputElement>(null)
   const envColors = task.env ? (ENV_COLORS[task.env] || ENV_COLORS.env7) : null
   const isWaiting = task.status === 'in_progress'
+  const isSnoozed = !!(task.snoozedUntil && task.snoozedUntil > Date.now())
 
   useEffect(() => { if (editing) editRef.current?.select() }, [editing])
 
@@ -142,7 +144,7 @@ function PrioritySortRow({ task, idx, isDragOver, isDragging, isLocked, editingD
     <div
       className={`flex items-center gap-3 py-2.5 px-3 -mx-3 transition-all group/row relative ${
         isDragging ? 'opacity-30' : ''
-      } ${isLocked ? 'opacity-30' : ''} ${isWaiting ? 'opacity-45' : ''}`}
+      } ${isLocked ? 'opacity-30' : ''} ${isWaiting ? 'opacity-45' : ''} ${isSnoozed ? 'opacity-40' : ''}`}
       style={isDragOver ? { boxShadow: '0 -2px 0 0 #60a5fa' } : undefined}
       onDragOver={onDragOver}
       onDrop={onDrop}
@@ -238,8 +240,15 @@ function PrioritySortRow({ task, idx, isDragOver, isDragging, isLocked, editingD
         </span>
       )}
 
+      {/* Snoozed indicator */}
+      {isSnoozed && (
+        <span className="text-[12px] font-medium text-amber-400 dark:text-amber-500 shrink-0 tracking-wide" title={`Snoozed until ${new Date(task.snoozedUntil!).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`}>
+          zzz
+        </span>
+      )}
+
       {/* Waiting indicator */}
-      {isWaiting && (
+      {isWaiting && !isSnoozed && (
         <span className="text-[12px] font-medium text-blue-400 dark:text-blue-500 uppercase tracking-wider shrink-0">
           waiting
         </span>
