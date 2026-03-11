@@ -821,7 +821,7 @@ export function FocusQueue() {
         {top!.kind === 'task' && top!.slackContext && top!.slackContext.length > 0 && (
           <div className="mt-4 flex flex-col gap-2">
             {top!.slackContext.map((ctx, i) => (
-              <SlackThreadPreview key={i} ref_={ctx.ref} label={ctx.label} />
+              <SlackThreadPreview key={`ctx-${ctx.ref}`} ref_={ctx.ref} label={ctx.label} />
             ))}
           </div>
         )}
@@ -871,7 +871,7 @@ export function FocusQueue() {
           const focusTs = isMention ? (hasThreadTs ? refParts[1] : '') : null
           return (
             <div className="mt-8">
-              <SlackThreadPreview ref_={channelRef} label={top!.channelLabel || top!.from || 'Slack'} defaultExpanded focusThreadTs={focusTs} draftReply={top!.draftReply || null} />
+              <SlackThreadPreview key={`slack-${top!.id}`} ref_={channelRef} label={top!.channelLabel || top!.from || 'Slack'} defaultExpanded focusThreadTs={focusTs} draftReply={top!.draftReply || null} />
             </div>
           )
         })()}

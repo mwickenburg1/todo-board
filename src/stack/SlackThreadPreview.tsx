@@ -327,6 +327,7 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
   const scrollRef = useRef<HTMLDivElement>(null)
   const threadScrollRef = useRef<HTMLDivElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
 
   const parts = ref_.split('/')
   const channel = parts[0]
@@ -338,13 +339,12 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
     ? `https://attentiontech.slack.com/archives/${channel}/p${msgTs.replace('.', '')}`
     : `https://attentiontech.slack.com/archives/${channel}`
 
-  const fetchThread = useCallback(() => {
-    if (!channel) return Promise.resolve()
-    // focusThreadTs mode: always fetch channel messages, we'll open the thread separately
+  const fetchThread = useCallback((signal?: AbortSignal) => {
+    if (!channel) return Promise.resolve(null as ThreadData | null)
     const url = isChannelOnly
       ? `/api/slack-channel/${channel}`
       : `/api/slack-thread/${channel}/${ts}`
-    return fetch(url)
+    return fetch(url, { signal })
       .then(res => res.ok ? res.json() : null)
       .then((result: ThreadData | null) => {
         if (result) {
@@ -354,17 +354,26 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
         }
         return result
       })
-      .catch(() => null)
-  }, [channel, ts, isChannelOnly, ref_, onUnreadChange]) // eslint-disable-line react-hooks/exhaustive-deps
+      .catch(err => {
+        if (err.name === 'AbortError') return null
+        return null
+      })
+  }, [channel, ts, isChannelOnly, ref_, onUnreadChange])
 
   // Fetch on mount AND when ref_ changes (fixes stale data when queue advances)
   useEffect(() => {
+    // Abort any in-flight fetch from previous item
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+
     setData(null)
     setActiveThread(null)
     setLoading(true)
     setError(false)
     setReplyText(draftReply || '')
-    fetchThread().then(async (result) => {
+    fetchThread(controller.signal).then(async (result) => {
+      if (controller.signal.aborted) return
       setLoading(false)
       if (!result || !defaultExpanded) return
 
@@ -411,12 +420,15 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
           openThread(last.threadTs!, last.text)
         }
       }
-    }).catch(() => { setError(true); setLoading(false) })
+    }).catch(() => {
+      if (!controller.signal.aborted) { setError(true); setLoading(false) }
+    })
+    return () => controller.abort()
   }, [ref_, focusThreadTs]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Poll for new messages
   useEffect(() => {
-    pollRef.current = setInterval(fetchThread, POLL_INTERVAL)
+    pollRef.current = setInterval(() => fetchThread(), POLL_INTERVAL)
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [fetchThread])
 
