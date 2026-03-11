@@ -1,4 +1,124 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
+
+// --- @mention autocomplete for Slack textareas ---
+
+interface SlackUser {
+  id: string
+  name: string
+  realName: string
+  avatar: string
+}
+
+function MentionTextarea({
+  value, onChange, onKeyDown, onKeyUp, placeholder, rows, className, disabled,
+}: {
+  value: string
+  onChange: (val: string) => void
+  onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void
+  onKeyUp?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void
+  placeholder?: string
+  rows?: number
+  className?: string
+  disabled?: boolean
+}) {
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null)
+  const [mentionIdx, setMentionIdx] = useState(0)
+  const [mentionResults, setMentionResults] = useState<SlackUser[]>([])
+  const [mentionPos, setMentionPos] = useState(0) // cursor position of @
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    if (mentionQuery === null || mentionQuery.length < 1) {
+      setMentionResults([])
+      return
+    }
+    if (fetchTimer.current) clearTimeout(fetchTimer.current)
+    fetchTimer.current = setTimeout(() => {
+      fetch(`/api/slack-users?q=${encodeURIComponent(mentionQuery)}`)
+        .then(r => r.json())
+        .then(users => { setMentionResults(users); setMentionIdx(0) })
+        .catch(() => setMentionResults([]))
+    }, 150)
+    return () => { if (fetchTimer.current) clearTimeout(fetchTimer.current) }
+  }, [mentionQuery])
+
+  const insertMention = (user: SlackUser) => {
+    const before = value.slice(0, mentionPos)
+    const after = value.slice(textareaRef.current?.selectionStart || mentionPos + (mentionQuery?.length || 0) + 1)
+    const mention = `<@${user.id}|${user.name}>`
+    onChange(before + mention + ' ' + after)
+    setMentionQuery(null)
+    setMentionResults([])
+    setTimeout(() => {
+      const pos = before.length + mention.length + 1
+      textareaRef.current?.setSelectionRange(pos, pos)
+      textareaRef.current?.focus()
+    }, 0)
+  }
+
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value
+    onChange(val)
+    const cursor = e.target.selectionStart
+    // Check if we're in an @mention context
+    const textBefore = val.slice(0, cursor)
+    const atMatch = textBefore.match(/@(\w*)$/)
+    if (atMatch) {
+      setMentionPos(cursor - atMatch[0].length)
+      setMentionQuery(atMatch[1])
+    } else {
+      setMentionQuery(null)
+      setMentionResults([])
+    }
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (mentionResults.length > 0) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIdx(i => Math.min(i + 1, mentionResults.length - 1)); return }
+      if (e.key === 'ArrowUp') { e.preventDefault(); setMentionIdx(i => Math.max(i - 1, 0)); return }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); insertMention(mentionResults[mentionIdx]); return }
+      if (e.key === 'Escape') { e.preventDefault(); setMentionQuery(null); setMentionResults([]); return }
+    }
+    onKeyDown?.(e)
+  }
+
+  return (
+    <div className="relative flex-1">
+      <textarea
+        ref={textareaRef}
+        value={value}
+        onChange={handleChange}
+        onKeyDown={handleKeyDown}
+        onKeyUp={onKeyUp}
+        placeholder={placeholder}
+        rows={rows}
+        className={className}
+        disabled={disabled}
+      />
+      {mentionResults.length > 0 && (
+        <div className="absolute bottom-full left-0 mb-1 w-64 max-h-[200px] overflow-y-auto bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50">
+          {mentionResults.map((user, i) => (
+            <div
+              key={user.id}
+              className={`flex items-center gap-2 px-3 py-2 cursor-pointer text-[13px] ${
+                i === mentionIdx ? 'bg-blue-50 dark:bg-blue-500/10' : 'hover:bg-gray-50 dark:hover:bg-white/[0.04]'
+              }`}
+              onMouseDown={(e) => { e.preventDefault(); insertMention(user) }}
+              onMouseEnter={() => setMentionIdx(i)}
+            >
+              {user.avatar && <img src={user.avatar} alt="" className="w-5 h-5 rounded" />}
+              <span className="font-medium text-gray-700 dark:text-gray-300">{user.name}</span>
+              {user.realName !== user.name && (
+                <span className="text-gray-400 dark:text-gray-500 truncate">{user.realName}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 interface ThreadMessage {
   who: string
@@ -136,10 +256,42 @@ function SlackIcon({ size = 14 }: { size?: number }) {
 }
 
 function renderText(text: string) {
-  const parts = text.split(/(\*\*[^*]+\*\*)/)
+  // Split on Slack link markup <url|label>, <url>, bold **text**, and *text*
+  const parts = text.split(/(<[^>]+>|\*\*[^*]+\*\*|\*[^*]+\*)/)
   return parts.map((part, i) => {
     if (part.startsWith('**') && part.endsWith('**')) {
       return <strong key={i} className="font-semibold">{part.slice(2, -2)}</strong>
+    }
+    if (part.startsWith('*') && part.endsWith('*') && part.length > 2) {
+      return <strong key={i} className="font-semibold">{part.slice(1, -1)}</strong>
+    }
+    // Slack link: <url|label> or <url>
+    if (part.startsWith('<') && part.endsWith('>')) {
+      const inner = part.slice(1, -1)
+      // @mention: <@U123|Name> or <@U123>
+      if (inner.startsWith('@')) {
+        const pipeIdx = inner.indexOf('|')
+        const name = pipeIdx > 0 ? inner.slice(pipeIdx + 1) : inner
+        return <span key={i} className="text-blue-500 dark:text-blue-400 font-medium">@{name}</span>
+      }
+      // Channel: <#C123|name>
+      if (inner.startsWith('#')) {
+        const pipeIdx = inner.indexOf('|')
+        const name = pipeIdx > 0 ? inner.slice(pipeIdx + 1) : inner
+        return <span key={i} className="text-blue-500 dark:text-blue-400 font-medium">#{name}</span>
+      }
+      // URL with label: <url|label>
+      const pipeIdx = inner.indexOf('|')
+      if (pipeIdx > 0) {
+        const url = inner.slice(0, pipeIdx)
+        const label = inner.slice(pipeIdx + 1)
+        return <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="text-blue-500 dark:text-blue-400 hover:underline">{label}</a>
+      }
+      // Plain URL: <url>
+      if (inner.startsWith('http')) {
+        return <a key={i} href={inner} target="_blank" rel="noopener noreferrer" className="text-blue-500 dark:text-blue-400 hover:underline">{inner.length > 60 ? inner.slice(0, 57) + '...' : inner}</a>
+      }
+      return part
     }
     return part
   })
@@ -508,14 +660,14 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
                 }}
                 className="flex items-end gap-2"
               >
-                <textarea
+                <MentionTextarea
                   value={channelText}
-                  onChange={(e) => setChannelText(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } e.stopPropagation() }}
+                  onChange={setChannelText}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); (e.target as HTMLTextAreaElement).form?.requestSubmit() } e.stopPropagation() }}
                   onKeyUp={(e) => e.stopPropagation()}
                   placeholder={channelName ? `Message ${channelName.startsWith('mpdm-') ? 'group' : '#' + channelName}...` : 'Message channel...'}
                   rows={1}
-                  className="flex-1 text-[14px] bg-white dark:bg-white/[0.05] border border-gray-200/50 dark:border-white/[0.08] rounded-md px-3 py-2.5 text-gray-700 dark:text-gray-300 placeholder-gray-400/60 dark:placeholder-gray-500/40 focus:outline-none focus:border-blue-400/50 dark:focus:border-blue-500/30 transition-colors resize-none"
+                  className="w-full text-[14px] bg-white dark:bg-white/[0.05] border border-gray-200/50 dark:border-white/[0.08] rounded-md px-3 py-2.5 text-gray-700 dark:text-gray-300 placeholder-gray-400/60 dark:placeholder-gray-500/40 focus:outline-none focus:border-blue-400/50 dark:focus:border-blue-500/30 transition-colors resize-none"
                   disabled={sendingChannel}
                 />
                 <button
@@ -625,14 +777,14 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
               }}
               className="flex items-end gap-2"
             >
-              <textarea
+              <MentionTextarea
                 value={replyText}
-                onChange={(e) => setReplyText(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } e.stopPropagation() }}
+                onChange={setReplyText}
+                onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); (e.target as HTMLTextAreaElement).form?.requestSubmit() } e.stopPropagation() }}
                 onKeyUp={(e) => e.stopPropagation()}
                 placeholder="Reply in thread..."
                 rows={2}
-                className="flex-1 text-[14px] bg-white dark:bg-white/[0.05] border border-gray-200/50 dark:border-white/[0.08] rounded-md px-3 py-2.5 text-gray-700 dark:text-gray-300 placeholder-gray-400/60 dark:placeholder-gray-500/40 focus:outline-none focus:border-blue-400/50 dark:focus:border-blue-500/30 transition-colors resize-none"
+                className="w-full text-[14px] bg-white dark:bg-white/[0.05] border border-gray-200/50 dark:border-white/[0.08] rounded-md px-3 py-2.5 text-gray-700 dark:text-gray-300 placeholder-gray-400/60 dark:placeholder-gray-500/40 focus:outline-none focus:border-blue-400/50 dark:focus:border-blue-500/30 transition-colors resize-none"
                 disabled={sending}
               />
               <button

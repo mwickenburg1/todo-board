@@ -24,6 +24,7 @@ import eventsRouter from './routes/events.js'
 import envStatusRouter from './routes/env-status.js'
 import focusQueueRouter from './focus-queue.js'
 import { startSlackDigest, acknowledgeDigest, resetAck } from './slack-digest.js'
+import { slack as slackApi } from './slack-api.js'
 import { parseSlackUrl, extractThreadContext, fetchThreadMessages, fetchChannelMessages, fetchDMThreadReplies, setReadCursor, getAllReadCursors } from './slack-extract.js'
 import { markRoutineChecked, isRoutineCheckedToday, clearStaleChecks } from './routine-state.js'
 import { getSnoozeMap } from './snooze-state.js'
@@ -248,6 +249,39 @@ app.post('/api/slack-reply/:channel/:threadTs', async (req, res) => {
 
 app.get('/api/slack-cursors', (req, res) => {
   res.json(getAllReadCursors())
+})
+
+// Slack user search — caches full user list, searches by display name / real name
+let slackUserListCache = null
+let slackUserListCacheTime = 0
+const SLACK_USER_LIST_TTL = 10 * 60_000 // 10 min
+
+app.get('/api/slack-users', async (req, res) => {
+  const q = (req.query.q || '').toLowerCase().trim()
+  if (!q) return res.json([])
+  try {
+    if (!slackUserListCache || Date.now() - slackUserListCacheTime > SLACK_USER_LIST_TTL) {
+      const result = await slackApi('users.list', { limit: 500 })
+      if (result.ok) {
+        slackUserListCache = (result.members || [])
+          .filter(u => !u.deleted && !u.is_bot && u.id !== 'USLACKBOT')
+          .map(u => ({
+            id: u.id,
+            name: u.profile?.display_name || u.real_name || u.name,
+            realName: u.real_name || '',
+            avatar: u.profile?.image_24 || u.profile?.image_32 || '',
+          }))
+        slackUserListCacheTime = Date.now()
+      }
+    }
+    if (!slackUserListCache) return res.json([])
+    const matches = slackUserListCache
+      .filter(u => u.name.toLowerCase().includes(q) || u.realName.toLowerCase().includes(q))
+      .slice(0, 8)
+    res.json(matches)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
 })
 
 // --- Route modules ---
