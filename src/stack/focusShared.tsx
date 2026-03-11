@@ -68,6 +68,56 @@ export function envNum(env: string): string {
   return n === '10' ? '0' : n
 }
 
+/** Smart deadline label: "9 AM" for today, "Fri 9 AM" for this week, "Mar 15" for this year, "Mar 15 '27" for future years */
+export function smartDeadlineLabel(d: string): { label: string; color: string } {
+  const now = new Date()
+  const nyNow = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }))
+  const today = nyNow.toLocaleDateString('en-CA')
+  const ds = d.includes('T') ? new Date(d).toLocaleDateString('en-CA', { timeZone: 'America/New_York' }) : d
+  const isPast = d.includes('T') ? new Date(d).getTime() < Date.now() : ds < today
+  const isToday = ds === today
+
+  // Color
+  const color = isPast ? 'text-red-500 dark:text-red-400' : isToday ? 'text-amber-500 dark:text-amber-400' : 'text-gray-400 dark:text-gray-500'
+
+  // Time string if datetime
+  const timeStr = d.includes('T') ? new Date(d).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true }) : null
+
+  // Today: just show time (e.g. "9 AM") or "Today"
+  if (isToday) return { label: timeStr || 'Today', color }
+
+  // Parse the target date
+  const target = d.includes('T') ? new Date(d) : new Date(ds + 'T12:00:00')
+  const targetNY = new Date(target.toLocaleString('en-US', { timeZone: 'America/New_York' }))
+
+  // Days difference
+  const todayStart = new Date(nyNow.getFullYear(), nyNow.getMonth(), nyNow.getDate())
+  const targetStart = new Date(targetNY.getFullYear(), targetNY.getMonth(), targetNY.getDate())
+  const diffDays = Math.round((targetStart.getTime() - todayStart.getTime()) / 86400000)
+
+  // Tomorrow
+  if (diffDays === 1) return { label: timeStr ? `Tomorrow ${timeStr}` : 'Tomorrow', color }
+
+  // Yesterday
+  if (diffDays === -1) return { label: timeStr ? `Yesterday ${timeStr}` : 'Yesterday', color }
+
+  // This week (within 6 days forward)
+  if (diffDays > 1 && diffDays <= 6) {
+    const dayName = target.toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short' })
+    return { label: timeStr ? `${dayName} ${timeStr}` : dayName, color }
+  }
+
+  // Same year
+  const thisYear = nyNow.getFullYear()
+  const targetYear = targetNY.getFullYear()
+  const monthDay = target.toLocaleDateString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric' })
+  if (targetYear === thisYear) return { label: timeStr ? `${monthDay} ${timeStr}` : monthDay, color }
+
+  // Different year
+  const shortYear = `'${String(targetYear).slice(2)}`
+  return { label: timeStr ? `${monthDay} ${shortYear} ${timeStr}` : `${monthDay} ${shortYear}`, color }
+}
+
 export function StyledTaskText({ text }: { text: string }) {
   const parts = text.split(/(\([^)]*\)|\[[^\]]*\])/)
   return (

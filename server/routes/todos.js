@@ -273,6 +273,14 @@ router.patch('/:id', (req, res) => {
       if (env === null || env === '') delete task.env
       else task.env = env
     }
+    if (req.body.deadline !== undefined) {
+      if (req.body.deadline === null || req.body.deadline === '') delete task.deadline
+      else task.deadline = req.body.deadline // ISO date string e.g. "2026-03-12"
+    }
+    if (req.body.notes !== undefined) {
+      if (req.body.notes === null || req.body.notes === '') delete task.notes
+      else task.notes = req.body.notes
+    }
     if (escalation !== undefined) {
       // Only one item per escalation level — clear others first
       if (escalation > 0) {

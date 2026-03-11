@@ -233,9 +233,31 @@ ${transcript}`
   })
 }
 
-export async function analyzeIncidentChannel(num, title, lines, fingerprint) {
-  return cachedAnalyze(`incident:${num}`, fingerprint, () => {
-    const prompt = `Recent messages from incident channel #${num} (${title || 'no title'}):\n\n${lines.join('\n')}\n\nSummarize the current status in ONE sentence (max 20 words). Focus on: what's broken, who's investigating, any progress. No markdown.`
-    return callSonnet(prompt)
+export async function analyzeIncidentChannel(num, title, state, lines, fingerprint) {
+  return cachedAnalyze(`incident:${num}`, fingerprint, async () => {
+    const prompt = `Recent messages from incident channel #${num} (${title || 'no title'}). Current state: ${state}.
+
+${lines.join('\n')}
+
+Respond in JSON: {"summary": "<ONE sentence, max 20 words: what's broken, who's investigating, progress>", "needs_attention": <true/false>}
+
+needs_attention should be FALSE if:
+- The incident is stable, mitigated, or winding down
+- The state just changed to Stable/Mitigated (that's a status update, not a new problem)
+- People are handling it and no escalation is needed
+
+needs_attention should be TRUE if:
+- The incident is actively breaking things with no fix in sight
+- It's new and unassigned
+- It's escalating or getting worse
+
+Return ONLY the JSON, no markdown.`
+    const raw = await callSonnet(prompt)
+    try {
+      const parsed = JSON.parse(raw)
+      return JSON.stringify(parsed)
+    } catch {
+      return JSON.stringify({ summary: raw, needs_attention: true })
+    }
   })
 }

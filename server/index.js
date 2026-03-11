@@ -1,8 +1,19 @@
 import { readFileSync, writeFileSync } from 'fs'
+import { execSync } from 'child_process'
 import { execFile } from 'child_process'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import express from 'express'
+
+// Kill any stale server/index.js processes from previous runs (zombie digest loops)
+try {
+  const out = execSync('pgrep -f "node server/index.js"', { encoding: 'utf8' }).trim()
+  const pids = out.split('\n').map(Number).filter(p => p && p !== process.pid)
+  for (const pid of pids) {
+    try { process.kill(pid, 'SIGTERM') } catch {}
+  }
+  if (pids.length > 0) console.log(`[startup] Killed ${pids.length} stale server process(es): ${pids.join(', ')}`)
+} catch {}
 import cors from 'cors'
 import { readData, saveData, popUndo, createTask } from './store.js'
 import { parseInput, placeSectionBefore } from './helpers.js'
@@ -463,6 +474,19 @@ app.post('/api/routine/check', (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
+})
+
+app.get('/api/disconnected', (_req, res) => {
+  res.json({ disconnected: isRoutineCheckedToday('Disconnected') })
+})
+
+app.get('/api/morning-status', (_req, res) => {
+  res.json({ dismissed: isRoutineCheckedToday('__morning_dismissed') })
+})
+
+app.post('/api/morning-dismiss', (_req, res) => {
+  markRoutineChecked('__morning_dismissed')
+  res.json({ success: true })
 })
 
 // Routine seeds on startup; pulse only on interval (so dismissals survive restarts)

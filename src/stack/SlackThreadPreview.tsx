@@ -169,7 +169,9 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
   const [loadingThread, setLoadingThread] = useState(false)
   const [hovered, setHovered] = useState(false)
   const [replyText, setReplyText] = useState('')
+  const [channelText, setChannelText] = useState('')
   const [sending, setSending] = useState(false)
+  const [sendingChannel, setSendingChannel] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const threadScrollRef = useRef<HTMLDivElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -482,50 +484,49 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
                 )
               })}
             </div>
-            {/* Channel reply input — for DMs or channel-level replies */}
-            {!activeThread && (
-              <div className="sticky bottom-0 bg-gray-50/95 dark:bg-[#1c1c1e]/95 backdrop-blur-sm border-t border-gray-200/30 dark:border-white/[0.04] px-3 py-2">
-                <form
-                  onSubmit={async (e) => {
-                    e.preventDefault()
-                    if (!replyText.trim() || sending) return
-                    setSending(true)
-                    try {
-                      const res = await fetch(`/api/slack-reply/${channel}/${ts || 'channel'}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ text: replyText.trim() }),
-                      })
-                      if (res.ok) {
-                        const newMsg: ThreadMessage = { who: 'You', isMe: true, text: replyText.trim(), ts: String(Date.now() / 1000) }
-                        setData(prev => prev ? { ...prev, messages: [...prev.messages, newMsg] } : prev)
-                        setReplyText('')
-                      }
-                    } catch {} finally {
-                      setSending(false)
+            {/* Channel reply input — always visible for sending to channel */}
+            <div className="sticky bottom-0 bg-gray-50/95 dark:bg-[#1c1c1e]/95 backdrop-blur-sm border-t border-gray-200/30 dark:border-white/[0.04] px-3 py-2">
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault()
+                  if (!channelText.trim() || sendingChannel) return
+                  setSendingChannel(true)
+                  try {
+                    const res = await fetch(`/api/slack-reply/${channel}/channel`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ text: channelText.trim() }),
+                    })
+                    if (res.ok) {
+                      const newMsg: ThreadMessage = { who: 'You', isMe: true, text: channelText.trim(), ts: String(Date.now() / 1000) }
+                      setData(prev => prev ? { ...prev, messages: [...prev.messages, newMsg] } : prev)
+                      setChannelText('')
                     }
-                  }}
-                  className="flex items-end gap-2"
+                  } catch {} finally {
+                    setSendingChannel(false)
+                  }
+                }}
+                className="flex items-end gap-2"
+              >
+                <textarea
+                  value={channelText}
+                  onChange={(e) => setChannelText(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } e.stopPropagation() }}
+                  onKeyUp={(e) => e.stopPropagation()}
+                  placeholder={channelName ? `Message ${channelName.startsWith('mpdm-') ? 'group' : '#' + channelName}...` : 'Message channel...'}
+                  rows={1}
+                  className="flex-1 text-[14px] bg-white dark:bg-white/[0.05] border border-gray-200/50 dark:border-white/[0.08] rounded-md px-3 py-2.5 text-gray-700 dark:text-gray-300 placeholder-gray-400/60 dark:placeholder-gray-500/40 focus:outline-none focus:border-blue-400/50 dark:focus:border-blue-500/30 transition-colors resize-none"
+                  disabled={sendingChannel}
+                />
+                <button
+                  type="submit"
+                  disabled={!channelText.trim() || sendingChannel}
+                  className="text-[13px] font-medium text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 disabled:text-gray-300 dark:disabled:text-gray-600 disabled:cursor-default cursor-pointer px-2 py-2.5 transition-colors"
                 >
-                  <textarea
-                    value={replyText}
-                    onChange={(e) => setReplyText(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }}
-                    placeholder="Reply..."
-                    rows={2}
-                    className="flex-1 text-[14px] bg-white dark:bg-white/[0.05] border border-gray-200/50 dark:border-white/[0.08] rounded-md px-3 py-2.5 text-gray-700 dark:text-gray-300 placeholder-gray-400/60 dark:placeholder-gray-500/40 focus:outline-none focus:border-blue-400/50 dark:focus:border-blue-500/30 transition-colors resize-none"
-                    disabled={sending}
-                  />
-                  <button
-                    type="submit"
-                    disabled={!replyText.trim() || sending}
-                    className="text-[13px] font-medium text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 disabled:text-gray-300 dark:disabled:text-gray-600 disabled:cursor-default cursor-pointer px-2 py-2.5 transition-colors"
-                  >
-                    {sending ? '...' : 'Send'}
-                  </button>
-                </form>
-              </div>
-            )}
+                  {sendingChannel ? '...' : 'Send'}
+                </button>
+              </form>
+            </div>
           </div>
         )}
       </div>
@@ -627,7 +628,8 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
               <textarea
                 value={replyText}
                 onChange={(e) => setReplyText(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }}
+                onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } e.stopPropagation() }}
+                onKeyUp={(e) => e.stopPropagation()}
                 placeholder="Reply in thread..."
                 rows={2}
                 className="flex-1 text-[14px] bg-white dark:bg-white/[0.05] border border-gray-200/50 dark:border-white/[0.08] rounded-md px-3 py-2.5 text-gray-700 dark:text-gray-300 placeholder-gray-400/60 dark:placeholder-gray-500/40 focus:outline-none focus:border-blue-400/50 dark:focus:border-blue-500/30 transition-colors resize-none"

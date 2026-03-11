@@ -19,7 +19,7 @@ export async function scanUnrepliedDMs(since) {
   for (const m of (r.messages?.matches || [])) {
     const ts = parseFloat(m.ts)
     if (ts < since) continue
-    const sender = m.username || 'unknown'
+    const sender = m.user ? await resolveUser(m.user) : (m.username || 'unknown')
     const chId = m.channel?.id
     if (!chId) continue
     if (!channelMap.has(chId) || ts > channelMap.get(chId).ts) {
@@ -340,7 +340,7 @@ export async function scanNewIncidents(since) {
     }
   }
 
-  return [...incidentMap.values()].filter(i => i.state !== 'Resolved')
+  return [...incidentMap.values()].filter(i => i.state !== 'Resolved' && !/stable|mitigated/i.test(i.state))
 }
 
 export async function readIncidentChannelMessages(incidents) {
@@ -361,7 +361,7 @@ export async function readIncidentChannelMessages(incidents) {
     if (lines.length === 0) continue
 
     const fingerprint = (h.messages || []).map(m => m.ts).join(',')
-    results.push({ num: inc.num, title: inc.title, lines, fingerprint })
+    results.push({ num: inc.num, title: inc.title, state: inc.state, lines, fingerprint })
   }
   return results
 }

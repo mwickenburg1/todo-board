@@ -61,6 +61,7 @@ Critical distinctions:
 - Only consider messages AFTER my last reply — everything before that is handled.
 - If they acknowledged or said they'll handle it ("noted", "will do", "on it"), ball is in THEIR court — FYI.
 - In group DMs: if two OTHER people are talking to EACH OTHER (not addressing me), that's FYI — even if one asks the other a question.
+- Consider whether I'm actually a participant in the conversation — if I haven't said anything and nobody is addressing me directly, lean toward FYI.
 
 Rules for DRAFT:
 - Write as Matthias would actually reply — casual, direct, concise (1-3 sentences).

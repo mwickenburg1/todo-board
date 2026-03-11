@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { ENV_COLORS, ESCALATION_COLORS, StyledTaskText, REMOTE_ENVS, showToast, openFleetEnv, envNum } from './focusShared'
+import { ENV_COLORS, ESCALATION_COLORS, StyledTaskText, REMOTE_ENVS, showToast, openFleetEnv, envNum, smartDeadlineLabel } from './focusShared'
 
 interface ClaudeLink {
   label: string
@@ -10,6 +10,7 @@ interface ClaudeLink {
 interface FleetTask {
   id: number; text: string; list: string; status: string; escalation: number;
   hasClaudeLink: boolean; claudeLinks: ClaudeLink[];
+  deadline: string | null;
 }
 
 export interface FleetEnv {
@@ -171,6 +172,31 @@ function EditableFleetItem({ task, env, onSave, onUnlink, onDone, onEscalate, on
           </svg>
         )}
       </button>
+      {/* Deadline clock icon */}
+      {task.deadline && task.deadline !== 'none' && (() => {
+        const d = task.deadline
+        const now = new Date()
+        const nyNow = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }))
+        const today = nyNow.toLocaleDateString('en-CA')
+        const ds = d.includes('T') ? new Date(d).toLocaleDateString('en-CA', { timeZone: 'America/New_York' }) : d
+        const todayStart = new Date(nyNow.getFullYear(), nyNow.getMonth(), nyNow.getDate())
+        const targetDate = new Date(ds + 'T12:00:00')
+        const targetStart = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate())
+        const diffDays = Math.round((targetStart.getTime() - todayStart.getTime()) / 86400000)
+        if (diffDays > 2) return null
+        const isPast = d.includes('T') ? new Date(d).getTime() < Date.now() : ds < today
+        const isUrgent = isPast || ds === today
+        const opacity = isUrgent ? 'opacity-100' : 'opacity-40'
+        const color = isPast ? 'text-red-500 dark:text-red-400' : ds === today ? 'text-amber-500 dark:text-amber-400' : 'text-gray-400 dark:text-gray-500'
+        const { label } = smartDeadlineLabel(d)
+        return (
+          <span className={`shrink-0 ${color} ${opacity}`} title={label}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+            </svg>
+          </span>
+        )
+      })()}
       {/* Claude Code link button */}
       <span className="relative shrink-0" onMouseLeave={handlePopoverLeave}>
         <button
@@ -390,7 +416,7 @@ export function FleetView({ fleet, onSave, onUnlink, onDone, onEscalate, onAdd, 
   const fleetMap = new Map(fleet.map(f => [f.env, f.tasks]))
   return (
     <div className="space-y-2 mt-4">
-      {[1, 2, 3, 4, 5, 6, 7, 8].map(n => (
+      {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => (
         <FleetEnvCell key={n} n={n} tasks={fleetMap.get(`env${n}`) || []} onSave={onSave} onUnlink={onUnlink} onDone={onDone} onEscalate={onEscalate} onAdd={onAdd} onReorder={onReorder}
           lockedIds={lockedIds} onToggleLock={toggleLock}
         />

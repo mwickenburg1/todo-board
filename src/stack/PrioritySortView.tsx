@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { ENV_COLORS, StyledTaskText, envNum } from './focusShared'
+import { ENV_COLORS, StyledTaskText, envNum, smartDeadlineLabel } from './focusShared'
 
 interface PriorityTask {
   id: number
@@ -7,6 +7,8 @@ interface PriorityTask {
   env: string | null
   escalation: number
   isFireDrill: boolean
+  deadline: string | null
+  status?: string
 }
 
 function PrioritySortRow({ task, idx, isDragOver, isDragging, isLocked, onDragOver, onDrop, onDragStart, onDragEnd, onToggleLock, onDone }: {
@@ -24,12 +26,13 @@ function PrioritySortRow({ task, idx, isDragOver, isDragging, isLocked, onDragOv
 }) {
   const [hovered, setHovered] = useState(false)
   const envColors = task.env ? (ENV_COLORS[task.env] || ENV_COLORS.env7) : null
+  const isWaiting = task.status === 'in_progress'
 
   return (
     <div
       className={`flex items-center gap-3 py-2.5 px-3 -mx-3 transition-all group/row ${
         isDragging ? 'opacity-30' : ''
-      } ${isLocked ? 'opacity-30' : ''}`}
+      } ${isLocked ? 'opacity-30' : ''} ${isWaiting ? 'opacity-45' : ''}`}
       style={isDragOver ? { boxShadow: '0 -2px 0 0 #60a5fa' } : undefined}
       onDragOver={onDragOver}
       onDrop={onDrop}
@@ -79,6 +82,19 @@ function PrioritySortRow({ task, idx, isDragOver, isDragging, isLocked, onDragOv
       <span className="flex-1 text-[19px] truncate">
         <StyledTaskText text={task.text} />
       </span>
+
+      {/* Deadline indicator */}
+      {task.deadline && task.deadline !== 'none' && (() => {
+        const { label, color } = smartDeadlineLabel(task.deadline)
+        return <span className={`text-[14px] font-medium shrink-0 ${color}`}>{label}</span>
+      })()}
+
+      {/* Waiting indicator */}
+      {isWaiting && (
+        <span className="text-[12px] font-medium text-blue-400 dark:text-blue-500 uppercase tracking-wider shrink-0">
+          waiting
+        </span>
+      )}
 
       {/* Fire drill indicator */}
       {task.isFireDrill && (

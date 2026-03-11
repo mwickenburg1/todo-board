@@ -53,11 +53,9 @@ router.post('/', (req, res) => {
           moves.push({ task, fromList: listName })
         } else if (task.status === 'in_progress') {
           task.status = 'pending'
-          const arr = data.lists[listName]
-          const idx = arr.indexOf(task)
-          if (idx > 0) { arr.splice(idx, 1); arr.unshift(task) }
+          // Keep task at its current position — priority order is set by user
           bumped++
-          console.log(`[events] Bumped "${task.text}" to top of actionable in ${listName}`)
+          console.log(`[events] Returned "${task.text}" to actionable in ${listName} (kept position)`)
         }
 
         if (isLabelOnly) {

@@ -9,6 +9,8 @@ import { useOptimisticActions } from './stack/useOptimisticActions'
 import { PulseBanner } from './stack/PulseBanner'
 import { RootGap } from './stack/RootGap'
 import { FocusQueue } from './stack/FocusQueue'
+import { EveningOverlay } from './stack/EveningOverlay'
+import { MorningOverlay } from './stack/MorningOverlay'
 
 export default function StackView() {
   const [data, setData] = useState<TodoData | null>(null)
@@ -21,6 +23,8 @@ export default function StackView() {
   const [gapSpacers, setGapSpacers] = useState<Record<number, number>>({})
   const [focusedSection, setFocusedSection] = useState<string | null>(null)
   const [dark, setDark] = useState(() => localStorage.getItem('dark-mode') === 'true')
+  const [disconnected, setDisconnected] = useState(false)
+  const [morningDismissed, setMorningDismissed] = useState(true) // default true to avoid flash
 
   const lastJsonRef = useRef('')
 
@@ -29,21 +33,42 @@ export default function StackView() {
     if (active?.tagName === 'INPUT' && active.dataset.dirty === 'true') return
 
     fetch('/api/todos')
-      .then(res => res.text())
+      .then(res => { if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.text() })
       .then(text => {
+        if (!text || !text.startsWith('{')) return // ignore empty/invalid responses during server restart
         if (text !== lastJsonRef.current) {
           lastJsonRef.current = text
           setData(JSON.parse(text))
         }
       })
-      .catch(err => setError(err.message))
+      .catch(() => {}) // silently retry on next interval
   }, [])
 
+  const checkOverlays = useCallback(() => {
+    fetch('/api/disconnected')
+      .then(res => res.json())
+      .then(({ disconnected: d }) => setDisconnected(d))
+      .catch(() => {})
+    fetch('/api/morning-status')
+      .then(res => res.json())
+      .then(({ dismissed }) => setMorningDismissed(dismissed))
+      .catch(() => {})
+  }, [])
+
+  const dismissMorning = useCallback(() => {
+    setMorningDismissed(true)
+    fetch('/api/morning-dismiss', { method: 'POST' }).catch(() => {})
+  }, [])
+
+  // Poll overlays faster when morning overlay is showing (Hammerspoon triggers server-side dismiss)
+  const morningActive = !disconnected && !morningDismissed
   useEffect(() => {
     fetchData()
+    checkOverlays()
     const interval = setInterval(fetchData, 5000)
-    return () => clearInterval(interval)
-  }, [fetchData])
+    const dcInterval = setInterval(checkOverlays, morningActive ? 1_000 : 60_000)
+    return () => { clearInterval(interval); clearInterval(dcInterval) }
+  }, [fetchData, checkOverlays, morningActive])
 
   // Cmd+Z / Ctrl+Z undo
   useEffect(() => {
@@ -157,6 +182,8 @@ export default function StackView() {
 
   return (
     <div className="min-h-screen bg-white pb-16">
+      <MorningOverlay active={!disconnected && !morningDismissed} onDismiss={dismissMorning} />
+      <EveningOverlay active={disconnected} />
       <div className="max-w-6xl mx-auto px-8 pt-8">
         {/* Focus Queue — display-only, fetches its own data from /api/focus */}
         <FocusQueue />

@@ -192,19 +192,24 @@ async function updateDigest() {
       }
     }
 
-    // Incidents — with channel summaries
+    // Incidents — with channel summaries and LLM attention judgment
     if (newIncidents.length > 0) {
       const rawChannelData = await readIncidentChannelMessages(newIncidents)
-      const summaryMap = new Map()
+      const analysisMap = new Map()
       for (const r of rawChannelData) {
-        const summary = await analyzeIncidentChannel(r.num, r.title, r.lines, r.fingerprint)
-        if (summary) summaryMap.set(r.num, summary)
+        const raw = await analyzeIncidentChannel(r.num, r.title, r.state, r.lines, r.fingerprint)
+        if (raw) {
+          try { analysisMap.set(r.num, JSON.parse(raw)) } catch { analysisMap.set(r.num, { summary: raw, needs_attention: true }) }
+        }
       }
       for (const i of newIncidents) {
-        const summary = summaryMap.get(i.num)
+        const analysis = analysisMap.get(i.num)
         const desc = `#${i.num}${i.title ? ': ' + i.title : ''} (${i.state})`
-        const text = summary ? `${desc} — ${summary}` : desc
-        items.push({ text: `Incident ${text}`, context: 'slack-incidents', priority: 3 })
+        const text = analysis?.summary ? `${desc} — ${analysis.summary}` : desc
+        // Hard rule: Stable/Mitigated incidents never need attention, regardless of LLM output
+        const stableState = /stable|mitigated/i.test(i.state)
+        const needsAttention = stableState ? false : analysis?.needs_attention !== false
+        items.push({ text: `Incident ${text}`, slackRef: `incident:${i.num}`, context: 'slack-incidents', priority: needsAttention ? 3 : 0 })
       }
     }
 
@@ -233,20 +238,23 @@ async function updateDigest() {
 
     // Suggestions already included from unified triage — no separate pass needed
 
-    // Update pulse list
+    // Update pulse list — atomic replace to avoid flicker during 500ms poll
     const data = readData()
     if (!data.lists.pulse) data.lists.pulse = []
 
-    // Remove old slack items
-    data.lists.pulse = data.lists.pulse.filter(t => !t.context?.startsWith('slack-'))
-
-    // Only add header + items if there's something to show
-    if (filteredItems.length > 0) {
-      filteredItems.unshift({ text: sinceLabel, context: 'slack-header', priority: -1 })
-      for (const item of filteredItems) {
-        data.lists.pulse.push(createTask(data, item))
+    // Build new slack items first — skip priority<=0 items (FYI/stable, never shown in queue)
+    const newSlackItems = []
+    const actionableItems = filteredItems.filter(i => i.priority > 0)
+    if (actionableItems.length > 0) {
+      actionableItems.unshift({ text: sinceLabel, context: 'slack-header', priority: -1 })
+      for (const item of actionableItems) {
+        newSlackItems.push(createTask(data, item))
       }
     }
+
+    // Atomic swap: remove old + add new in one write
+    const nonSlack = data.lists.pulse.filter(t => !t.context?.startsWith('slack-'))
+    data.lists.pulse = [...nonSlack, ...newSlackItems]
 
     saveData(data)
     const hasIssues = filteredItems.some(i => i.priority > 0)
@@ -303,6 +311,18 @@ export function startSlackDigest() {
     console.log('[slack-digest] No SLACK_USER_TOKEN, skipping')
     return
   }
+  // Clear stale slack items from disk on startup (digest will repopulate)
+  try {
+    const data = readData()
+    if (data.lists.pulse) {
+      const before = data.lists.pulse.length
+      data.lists.pulse = data.lists.pulse.filter(t => !t.context?.startsWith('slack-'))
+      if (data.lists.pulse.length < before) {
+        saveData(data)
+        console.log(`[slack-digest] Cleared ${before - data.lists.pulse.length} stale slack items on startup`)
+      }
+    }
+  } catch {}
   console.log('[slack-digest] Starting (1m interval)')
   setTimeout(updateDigest, 3000)
   setInterval(updateDigest, 60 * 1000)
