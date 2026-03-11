@@ -316,7 +316,7 @@ function PRView({ prs }: { prs: PR[] }) {
       for (const s of stack) expanded.add(s.number)
     }
     const fullList = prs.filter(p => expanded.has(p.number))
-    if (fullList.length >= 2) {
+    if (fullList.length >= 1) {
       groups.push({ label: proj, prs: fullList })
       for (const p of fullList) assigned.add(p.number)
     }
@@ -362,13 +362,32 @@ function PRView({ prs }: { prs: PR[] }) {
   }
   // Promote ungrouped PRs with Slack shares or ready status into their own 1-item group
   // so they participate in the group sort (instead of being buried under "Other")
+  // If multiple promoted PRs share the same slackNote, merge them into one group
   const trueUngrouped: PR[] = []
+  const slackNoteGroups = new Map<string, { label: string; prs: PR[] }>()
   for (const pr of ungrouped) {
     if (pr.slackShared || (pr.review === 'APPROVED' && (pr.ci === 'passing' || pr.ci === 'none'))) {
-      const label = branchTicket(pr.branch) || pr.title.slice(0, 40)
-      groups.push({ label, prs: [pr] })
+      const noteKey = pr.slackNote?.trim()
+      if (noteKey && slackNoteGroups.has(noteKey)) {
+        slackNoteGroups.get(noteKey)!.prs.push(pr)
+      } else if (noteKey) {
+        const label = branchTicket(pr.branch) || pr.title.slice(0, 40)
+        const g = { label, prs: [pr] }
+        slackNoteGroups.set(noteKey, g)
+        groups.push(g)
+      } else {
+        const label = branchTicket(pr.branch) || pr.title.slice(0, 40)
+        groups.push({ label, prs: [pr] })
+      }
     } else {
       trueUngrouped.push(pr)
+    }
+  }
+  // Update labels for merged slackNote groups
+  for (const g of slackNoteGroups.values()) {
+    if (g.prs.length > 1) {
+      const tickets = g.prs.map(p => branchTicket(p.branch)).filter(Boolean)
+      g.label = tickets.join(' + ') || g.label
     }
   }
   ungrouped.length = 0
@@ -916,6 +935,7 @@ export function FocusQueue() {
   const [newItemFireDrill, setNewItemFireDrill] = useState(false)
   const [newItemPrefill, setNewItemPrefill] = useState('')
   const [rescheduleOpen, setRescheduleOpen] = useState(false)
+  const [viewLoading, setViewLoading] = useState<string | null>(null)
   const lastJsonRef = useRef('')
   const dataRef = useRef<FocusResponse | null>(null)
 
@@ -944,6 +964,12 @@ export function FocusQueue() {
   }, [fetchQueue])
 
   const topId = data?.top?.id ?? null
+  const topKind = data?.top?.kind
+
+  // Clear loading overlay when view data arrives
+  useEffect(() => {
+    if (viewLoading && topKind === 'prs') setViewLoading(null)
+  }, [topKind, viewLoading])
 
   useEffect(() => {
     if (lastItemId !== null && topId !== lastItemId) {
@@ -972,6 +998,7 @@ export function FocusQueue() {
   }, [fetchQueue])
 
   const triggerPRs = useCallback(() => {
+    setViewLoading('Loading PRs...')
     fetch('/api/focus/trigger-prs', { method: 'POST' }).then(() => {
       lastJsonRef.current = ''
       fetchQueue()
@@ -1295,6 +1322,14 @@ export function FocusQueue() {
           <span>new item</span>
         </button>
       </div>
+
+      {/* Loading overlay for slow view transitions (e.g. PRs) */}
+      {viewLoading && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/20 dark:bg-black/40 rounded-2xl">
+          <span className="text-[14px] font-medium text-gray-500 dark:text-gray-400 animate-pulse">{viewLoading}</span>
+        </div>
+      )}
+
       <div className={`
         relative px-8 pt-8 pb-8 rounded-2xl ${top!.kind === 'fleet' || top!.kind === 'priority-sort' || top!.kind === 'prs' || top!.kind === 'deadlines' ? 'min-h-[700px]' : ''}
         bg-white dark:bg-[#1c1c1e]

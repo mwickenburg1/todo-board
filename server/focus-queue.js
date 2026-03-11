@@ -151,7 +151,7 @@ function fetchLinearProjects(ticketIds) {
 }
 
 function fetchPRsFromRepo(repoDir, repoLabel) {
-  const ghJq = `[.[] | {number, title: .title, branch: .headRefName, base: .baseRefName, review: .reviewDecision, url, mergeable, updatedAt, ci: ((.statusCheckRollup | group_by(.name) | map(last)) as $checks | if ($checks | length) == 0 then "none" elif ($checks | map(select(.conclusion == "FAILURE" or .conclusion == "ACTION_REQUIRED")) | length) > 0 then "failing" elif ($checks | map(select(.status == "IN_PROGRESS" or .status == "QUEUED")) | length) > 0 then "running" elif ($checks | all(.conclusion == "SUCCESS" or .conclusion == "SKIPPED" or .conclusion == "NEUTRAL")) then "passing" else "mixed" end)}]`
+  const ghJq = `[.[] | {number, title: .title, branch: .headRefName, base: .baseRefName, review: .reviewDecision, url, mergeable, updatedAt, ci: ((.statusCheckRollup | group_by(.name) | map(last)) as $checks | if ($checks | length) == 0 then "none" elif ($checks | map(select(.conclusion == "FAILURE" or .conclusion == "ACTION_REQUIRED")) | length) > 0 then "failing" elif ($checks | map(select(.status == "IN_PROGRESS" or .status == "QUEUED")) | length) > 0 then "running" elif ($checks | all(.conclusion == "SUCCESS" or .conclusion == "SKIPPED" or .conclusion == "NEUTRAL")) then "passing" else "mixed" end), failingChecks: [(.statusCheckRollup | group_by(.name) | map(last))[] | select(.conclusion == "FAILURE" or .conclusion == "ACTION_REQUIRED") | .name]}]`
   try {
     const out = execSync(
       `cd ${repoDir} && gh pr list --author @me --state open --json number,title,headRefName,baseRefName,reviewDecision,url,statusCheckRollup,mergeable,updatedAt --jq '${ghJq}'`,
@@ -161,6 +161,44 @@ function fetchPRsFromRepo(repoDir, repoLabel) {
   } catch (err) {
     console.error(`[prs] Failed to fetch ${repoLabel}:`, err.message?.slice(0, 80))
     return []
+  }
+}
+
+// Check if semgrep failures are in files outside the PR's diff.
+// Returns true ONLY if we can confirm all findings are in unrelated files.
+// Conservative: returns false (don't ignore) on any error or ambiguity.
+function isSemgrepUnrelated(repoDir, prNumber) {
+  try {
+    // Get files changed in the PR
+    const prFiles = execSync(
+      `cd ${repoDir} && gh pr diff ${prNumber} --name-only`,
+      { encoding: 'utf8', timeout: 10000 }
+    ).trim().split('\n').filter(Boolean)
+    if (prFiles.length === 0) return false
+    const prFileSet = new Set(prFiles)
+
+    // Get the semgrep check link to find the run ID
+    const checkLink = execSync(
+      `cd ${repoDir} && gh pr checks ${prNumber} --json name,link --jq '.[] | select(.name=="semgrep") | .link'`,
+      { encoding: 'utf8', timeout: 5000 }
+    ).trim()
+    const runMatch = checkLink.match(/runs\/(\d+)/)
+    if (!runMatch) return false
+
+    // Extract file paths from semgrep log (lines containing file paths like "    pkg/foo/bar.go")
+    const log = execSync(
+      `cd ${repoDir} && gh run view ${runMatch[1]} --log 2>&1 | grep "^semgrep" | grep -oP '\\s{4,}(pkg/\\S+\\.go|internal/\\S+\\.go|cmd/\\S+\\.go)' | sed 's/^\\s*//' | sort -u`,
+      { encoding: 'utf8', timeout: 15000 }
+    ).trim()
+    const findingFiles = log ? log.split('\n').filter(Boolean) : []
+    // If we couldn't extract any file paths, be conservative
+    if (findingFiles.length === 0) return false
+
+    const unrelated = findingFiles.every(f => !prFileSet.has(f))
+    if (unrelated) console.log(`[prs] PR #${prNumber}: semgrep findings in ${findingFiles.join(', ')} — not in PR, ignoring`)
+    return unrelated
+  } catch {
+    return false // conservative: if anything fails, don't ignore
   }
 }
 
@@ -197,6 +235,17 @@ function fetchPRs() {
     // Mark stacked PRs (base is not production)
     for (const pr of prs) {
       pr.stacked = pr.base !== 'production'
+    }
+
+    // Downgrade semgrep-only CI failures if findings are in unrelated files
+    for (const pr of prs) {
+      if (pr.ci === 'failing' && pr.failingChecks?.length === 1 && pr.failingChecks[0] === 'semgrep') {
+        const repoDir = pr.repo === 'widget' ? '/home/ubuntu/env1/streamer/repos/widget' : '/home/ubuntu/env1/streamer'
+        if (isSemgrepUnrelated(repoDir, pr.number)) {
+          pr.ci = 'passing'
+          pr.ciNote = 'semgrep findings in unrelated files'
+        }
+      }
     }
 
     // Extract ticket IDs from branches and fetch Linear projects

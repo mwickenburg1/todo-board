@@ -1,3 +1,4 @@
+import 'dotenv/config'
 import { readFileSync, writeFileSync } from 'fs'
 import { execSync } from 'child_process'
 import { execFile } from 'child_process'
