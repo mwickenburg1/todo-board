@@ -103,12 +103,12 @@ Rules for DRAFT:
 
 ACTIONS: <JSON array of ranked next steps, most important first>
 
-Each action is an object with "type" and optional params:
-- {"type":"reply","draft":"<message>"} — reply in the thread/DM
-- {"type":"track","taskText":"<short task name>","delegateOnly":true/false,"deadline":"YYYY-MM-DDTHH:mm"} — create a tracked task (delegateOnly=true if someone else owns it)
-- {"type":"watch","taskText":"<short task name>","checkHours":24,"deadline":"YYYY-MM-DDTHH:mm"} — watch for follow-up (implies delegateOnly)
-- {"type":"done"} — dismiss, no action needed
-- {"type":"snooze"} — revisit later
+Each action is an object with "type" and params. "deadline" is REQUIRED on track/watch (never omit it):
+- {"type":"reply","draft":"<message>"}
+- {"type":"track","taskText":"<2-4 words>","delegateOnly":true/false,"deadline":"2026-03-14T17:00"} — MUST include deadline
+- {"type":"watch","taskText":"<2-4 words>","checkHours":24,"deadline":"2026-03-14T17:00"} — MUST include deadline
+- {"type":"done"}
+- {"type":"snooze"}
 
 Rules for ACTIONS:
 - Always include 2-4 actions ranked by relevance.
