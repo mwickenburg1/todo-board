@@ -681,7 +681,7 @@ router.post('/promote', (req, res) => {
 // POST /api/focus/watch — create a task with slackWatches from a Slack card
 router.post('/watch', (req, res) => {
   try {
-    const { text, slackRef, checkHours = 24, delegateOnly = false, existingTaskId } = req.body
+    const { text, slackRef, checkHours = 24, delegateOnly = false, existingTaskId, deadline } = req.body
     if (!slackRef) return res.status(400).json({ error: 'slackRef required' })
 
     const data = readData()
@@ -709,6 +709,7 @@ router.post('/watch', (req, res) => {
       if (!result.task.slackWatches.some(w => w.ref === slackRef)) {
         result.task.slackWatches.push(watchEntry)
       }
+      if (deadline && !result.task.deadline) result.task.deadline = deadline
       saveData(data)
       pendingPrioritySort = true
       return res.json({ success: true, taskId: result.task.id, attached: true })
@@ -721,6 +722,7 @@ router.post('/watch', (req, res) => {
       priority: 1,
       status: delegateOnly ? 'in_progress' : 'pending',
       slackWatches: [watchEntry],
+      ...(deadline ? { deadline } : {}),
     })
 
     if (!data.lists['daily-goals']) data.lists['daily-goals'] = []

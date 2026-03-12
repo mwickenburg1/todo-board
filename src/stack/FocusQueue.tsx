@@ -610,7 +610,7 @@ export function FocusQueue() {
       fetch('/api/focus/watch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, slackRef, delegateOnly, checkHours: checkHours || 24, existingTaskId }),
+        body: JSON.stringify({ text, slackRef, delegateOnly, checkHours: checkHours || 24, existingTaskId, deadline }),
       }).then(() => {
         lastJsonRef.current = ''
         setNewItemSlackRef(null)
