@@ -75,6 +75,8 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
 
   const selectedType = TYPE_OPTIONS[selectedIdx].type
   const showSnooze = selectedType === 'fire-drill'
+  // Show settings panels: always when past text input, or in watch mode with LLM hint (preview while combobox is active)
+  const showPanels = focusArea !== 'text' || (isWatch && !!actionHint)
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -422,7 +424,7 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
         )}
 
         {/* Type picker — horizontal, Left/Right to navigate */}
-        {focusArea !== 'text' && (
+        {showPanels && (
           <div className={`border-t border-gray-100 dark:border-white/[0.06] px-6 py-3 flex items-center gap-3 transition-colors ${
             focusArea === 'type' ? 'bg-gray-50/50 dark:bg-white/[0.02]' : ''
           }`}>
@@ -454,7 +456,7 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
         )}
 
         {/* Delegate-only toggle — when watching a Slack thread */}
-        {focusArea !== 'text' && isWatch && (
+        {showPanels && isWatch && (
           <div className={`border-t border-gray-100 dark:border-white/[0.06] px-6 py-3 flex items-center gap-3 transition-colors ${
             focusArea === 'mode' ? 'bg-gray-50/50 dark:bg-white/[0.02]' : ''
           }`}>
@@ -492,7 +494,7 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
         )}
 
         {/* Nudge interval — when watching a Slack thread */}
-        {focusArea !== 'text' && isWatch && (
+        {showPanels && isWatch && (
           <div className={`border-t border-gray-100 dark:border-white/[0.06] px-6 py-3 flex items-center gap-3 transition-colors ${
             focusArea === 'nudge' ? 'bg-gray-50/50 dark:bg-white/[0.02]' : ''
           }`}>
@@ -521,7 +523,7 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
         )}
 
         {/* Snooze picker — when fire drill selected */}
-        {focusArea !== 'text' && showSnooze && (
+        {showPanels && showSnooze && (
           <div className={`border-t border-gray-100 dark:border-white/[0.06] px-6 py-3 flex items-center gap-3 transition-colors ${
             focusArea === 'snooze' ? 'bg-gray-50/50 dark:bg-white/[0.02]' : ''
           }`}>
@@ -549,7 +551,7 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
         )}
 
         {/* Deadline input */}
-        {focusArea !== 'text' && (
+        {showPanels && (
           <div className={`border-t border-gray-100 dark:border-white/[0.06] px-6 py-3 flex items-center gap-3 transition-colors ${
             focusArea === 'deadline' ? 'bg-gray-50/50 dark:bg-white/[0.02]' : ''
           }`}>
@@ -593,7 +595,7 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
         )}
 
         {/* Slack context — when extracted */}
-        {focusArea !== 'text' && slackContext && (
+        {showPanels && slackContext && (
           <div className="border-t border-gray-100 dark:border-white/[0.06] px-6 py-3">
             <div className="flex items-center gap-2">
               <span className="text-[12px] text-purple-500 dark:text-purple-400 font-medium shrink-0">Slack</span>
@@ -619,7 +621,7 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
 
 
         {/* Submit hint */}
-        {focusArea !== 'text' && (
+        {showPanels && (
           <div className="border-t border-gray-100 dark:border-white/[0.06] px-6 py-2.5 flex items-center justify-end">
             <span className="inline-flex items-center gap-1.5 text-[12px] text-gray-300 dark:text-gray-600">
               <kbd className={`px-2 py-0.5 rounded-[5px] font-mono text-[10px] font-medium border ${

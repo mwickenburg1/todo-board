@@ -310,6 +310,7 @@ interface TriageAction {
   taskText?: string
   delegateOnly?: boolean
   checkHours?: number
+  deadline?: string
 }
 
 type HotkeyEmphasis = 'primary' | 'secondary' | 'default'
