@@ -307,6 +307,7 @@ function computeQueue(data) {
     const fleet = computeFleet(data)
     fleetItem.fleet = fleet
     fleetItem.label = 'Manage fleet'
+    if (pendingFleet) fleetItem.score = 15002
   }
 
   // --- Priority sort: inject all daily-goals tasks (pending + in_progress) as flat list ---
