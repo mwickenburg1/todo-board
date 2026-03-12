@@ -45,7 +45,7 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
   const [text, setText] = useState(prefill)
   const [selectedIdx, setSelectedIdx] = useState(0)
   const [snoozeMins, setSnoozeMins] = useState(5)
-  const [delegateOnly, setDelegateOnly] = useState(actionHint?.delegateOnly ?? false)
+  const [delegateOnly, setDelegateOnly] = useState(actionHint?.delegateOnly ?? (actionHint?.type === 'watch' ? true : false))
   const [checkHours, setCheckHours] = useState(actionHint?.checkHours ?? 24)
   // If actionHint provided with a taskText, skip text input — UNLESS it's a watch (show combobox)
   const [focusArea, setFocusArea] = useState<'text' | 'type' | 'mode' | 'nudge' | 'snooze' | 'deadline'>(

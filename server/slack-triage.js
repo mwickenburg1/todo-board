@@ -106,7 +106,7 @@ ACTIONS: <JSON array of ranked next steps, most important first>
 Each action is an object with "type" and params. "deadline" is REQUIRED on track/watch (never omit it):
 - {"type":"reply","draft":"<message>"}
 - {"type":"track","taskText":"<2-4 words>","delegateOnly":true/false,"deadline":"2026-03-14T17:00"} — MUST include deadline
-- {"type":"watch","taskText":"<2-4 words>","checkHours":24,"deadline":"2026-03-14T17:00"} — MUST include deadline
+- {"type":"watch","taskText":"<2-4 words>","checkHours":24,"delegateOnly":true,"deadline":"2026-03-14T17:00"} — MUST include deadline+delegateOnly
 - {"type":"done"}
 - {"type":"snooze"}
 
