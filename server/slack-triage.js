@@ -117,7 +117,7 @@ Rules for ACTIONS:
 - If URGENCY is FYI, first action should be "done".
 - "reply" action MUST include the same draft text as DRAFT.
 - "track"/"watch" taskText should be ultra-concise (2-4 words max), not the full summary. Examples: "MaintainX Slack access", "Deploy hotfix", "Review PR".
-- For delegate scenarios, prefer "track" with delegateOnly:true over "watch".
+- delegateOnly: set to TRUE when the next action is on someone else (they said "let me check", "I'll get back to you", "let me loop in X", or the ball is in their court after my last message). Set to FALSE only when I personally need to do something next. When in doubt, ask: "who has the next move?" If it's not me, delegateOnly=true.
 - "deadline" MUST be included on every "track" and "watch" action. Always estimate a reasonable follow-up time even if the conversation doesn't state one explicitly. Use YYYY-MM-DDTHH:mm format (ET). Guidelines: explicit dates ("tomorrow", "Friday") → resolve relative to when messages were SENT, not now. No explicit date but urgent/blocking → next business day 09:00. Routine follow-up → 2-3 business days out at 17:00. Low priority → end of week (Fri 17:00).${lastMsgStr ? ` Last message was sent: ${lastMsgStr}.` : ''} Current time: ${nowStr}. Time hints: "tomorrow" / "on Friday" = EOD (17:00). "by tomorrow" / "by Friday" = start of day (09:00). "end of week" = Fri 17:00.
 - Output valid JSON on a single line after "ACTIONS: ".
 
