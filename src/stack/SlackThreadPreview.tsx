@@ -375,7 +375,8 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
     fetchThread(controller.signal).then(async (result) => {
       if (controller.signal.aborted) return
       setLoading(false)
-      if (!result || !defaultExpanded) return
+      if (!result) { setError(true); return }
+      if (!defaultExpanded) return
 
       if (focusThreadTs) {
         // Focus mode: auto-open the specific thread that triggered this mention
@@ -423,7 +424,6 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
     }).catch(() => {
       if (!controller.signal.aborted) { setError(true); setLoading(false) }
     })
-    return () => controller.abort()
   }, [ref_, focusThreadTs]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Poll for new messages
@@ -578,7 +578,7 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
                 const isFocusMessage = msg.isThreadOrigin || (focusThreadTs && msg.threadTs === focusThreadTs)
                 const fadeOpacity = hovered ? 1 : (isFocusMessage ? 1 : recencyOpacity(i, messages.length))
                 return (
-                <div key={i} style={{ opacity: fadeOpacity, transition: 'opacity 0.3s ease' }}
+                <div key={i} className="group/msg" style={{ opacity: fadeOpacity, transition: 'opacity 0.3s ease' }}
                   {...(msg.isThreadOrigin || (focusThreadTs && msg.threadTs === focusThreadTs) ? { 'data-thread-origin': '' } : {})}
                 >
                   {/* Thread origin separator — injected root message from an older thread */}
@@ -625,8 +625,8 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
                       {formatTime(msg.ts)}
                     </span>
                   </div>
-                  {/* Thread replies badge */}
-                  {msg.replyCount != null && msg.replyCount > 0 && msg.threadTs && (
+                  {/* Thread replies badge / start thread button */}
+                  {msg.replyCount != null && msg.replyCount > 0 && msg.threadTs ? (
                     <button
                       onClick={() => openThread(msg.threadTs!, msg.text)}
                       className={`ml-[122px] mt-1 mb-2 flex items-center gap-2 py-1.5 px-3 rounded-md cursor-pointer transition-colors ${
@@ -642,6 +642,18 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
                           · {formatDateHeader(msg.latestReplyTs)} {formatTime(msg.latestReplyTs)}
                         </span>
                       )}
+                    </button>
+                  ) : msg.ts && !msg.isMe && (
+                    <button
+                      onClick={() => openThread(msg.ts, msg.text)}
+                      className={`ml-[122px] mt-0.5 mb-1 flex items-center gap-1.5 py-1 px-2.5 rounded-md cursor-pointer transition-all text-[12px] ${
+                        activeThread?.threadTs === msg.ts
+                          ? 'bg-blue-100/40 dark:bg-blue-500/[0.08] text-blue-500/70 dark:text-blue-400/60'
+                          : 'opacity-0 group-hover/msg:opacity-100 text-gray-400/60 dark:text-gray-500/40 hover:bg-gray-100/50 dark:hover:bg-white/[0.04] hover:text-gray-500 dark:hover:text-gray-400'
+                      }`}
+                    >
+                      <span className="text-[13px]">💬</span>
+                      <span>Reply in thread</span>
                     </button>
                   )}
                 </div>

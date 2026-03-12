@@ -65,7 +65,26 @@ Critical distinctions:
 
 Rules for DRAFT:
 - Write as Matthias would actually reply — casual, direct, concise (1-3 sentences).
-- If no action needed, DRAFT must be "none".`
+- If no action needed, DRAFT must be "none".
+
+ACTIONS: <JSON array of ranked next steps, most important first>
+
+Each action is an object with "type" and optional params:
+- {"type":"reply","draft":"<message>"} — reply in the thread/DM
+- {"type":"track","taskText":"<short task name>","delegateOnly":true/false} — create a tracked task (delegateOnly=true if someone else owns it)
+- {"type":"watch","taskText":"<short task name>","checkHours":24} — watch for follow-up (implies delegateOnly)
+- {"type":"done"} — dismiss, no action needed
+- {"type":"snooze"} — revisit later
+
+Rules for ACTIONS:
+- Always include 2-4 actions ranked by relevance.
+- First action = primary recommendation.
+- If URGENCY is ACTION_NEEDED, first action should be "reply" or "track".
+- If URGENCY is FYI, first action should be "done".
+- "reply" action MUST include the same draft text as DRAFT.
+- "track"/"watch" taskText should be a concise task name (3-8 words), not the full summary.
+- For delegate scenarios, prefer "track" with delegateOnly:true over "watch".
+- Output valid JSON on a single line after "ACTIONS: ".`
 }
 
 // --- Response parser (pure, testable) ---
@@ -75,12 +94,13 @@ Rules for DRAFT:
  * @returns {{ urgency: 'ACTION_NEEDED' | 'FYI' | null, summary: string | null, action: string | null, draft: string | null }}
  */
 export function parseTriageResult(raw) {
-  if (!raw) return { urgency: null, summary: null, action: null, draft: null }
+  if (!raw) return { urgency: null, summary: null, action: null, draft: null, actions: null }
 
   const urgencyMatch = raw.match(/^URGENCY:\s*(.+)/m)
   const summaryMatch = raw.match(/^SUMMARY:\s*(.+)/m)
   const actionMatch = raw.match(/^ACTION:\s*(.+)/m)
   const draftMatch = raw.match(/^DRAFT:\s*(.+)/m)
+  const actionsMatch = raw.match(/^ACTIONS:\s*(.+)/m)
 
   const urgencyRaw = urgencyMatch ? urgencyMatch[1].trim() : null
   const urgency = urgencyRaw?.startsWith('ACTION') ? 'ACTION_NEEDED'
@@ -92,7 +112,29 @@ export function parseTriageResult(raw) {
   const draftRaw = draftMatch ? draftMatch[1].trim() : null
   const draft = draftRaw && draftRaw.toLowerCase() !== 'none' ? draftRaw : null
 
-  return { urgency, summary, action, draft }
+  let actions = null
+  if (actionsMatch) {
+    try {
+      const parsed = JSON.parse(actionsMatch[1].trim())
+      if (Array.isArray(parsed)) actions = parsed
+    } catch {}
+  }
+
+  // Fallback: synthesize actions from urgency/draft if LLM didn't provide them
+  if (!actions) {
+    actions = []
+    if (urgency === 'ACTION_NEEDED') {
+      if (draft) actions.push({ type: 'reply', draft })
+      actions.push({ type: 'track', taskText: summary || 'Follow up', delegateOnly: false })
+      actions.push({ type: 'done' })
+    } else {
+      actions.push({ type: 'done' })
+      if (draft) actions.push({ type: 'reply', draft })
+      actions.push({ type: 'snooze' })
+    }
+  }
+
+  return { urgency, summary, action, draft, actions }
 }
 
 // --- Async triage with caching ---

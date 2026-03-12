@@ -14,16 +14,22 @@ export const OPENAI_API_KEY = process.env.OPENAI_API_KEY
 export const USER_ID = 'U02BMLFJJ64'
 export const CRASHES_CHANNEL = 'C09TBCMEPPA'
 export const INCIDENTS_CHANNEL = 'C07QTH1005N'
-export const INITIAL_LOOKBACK_HOURS = 12
-export const BOT_SENDERS = new Set(['triage buddy', 'support-router', 'Datadog', 'Triage Buddy'])
+export const INITIAL_LOOKBACK_HOURS = 0.5 // 30 min — keeps cold start fast
+export const BOT_SENDERS = new Set(['triage buddy', 'support-router', 'Datadog', 'Triage Buddy', 'Linear'])
 export const LLM_LOG = resolve(__dirname, '..', 'llm-calls.log')
 
-export async function slack(method, params = {}, { useSearch = false } = {}) {
+export async function slack(method, params = {}, { useSearch = false, retries = 2 } = {}) {
   const token = useSearch ? SLACK_SEARCH_TOKEN : SLACK_TOKEN
   const url = new URL(`https://slack.com/api/${method}`)
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v))
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
-  return res.json()
+  const data = await res.json()
+  if (!data.ok && data.error === 'ratelimited' && retries > 0) {
+    const wait = Math.max(parseInt(res.headers.get('retry-after') || '1', 10), 1)
+    await new Promise(r => setTimeout(r, wait * 1000))
+    return slack(method, params, { useSearch, retries: retries - 1 })
+  }
+  return data
 }
 
 const userCache = {}

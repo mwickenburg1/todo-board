@@ -99,6 +99,18 @@ export function createEmptySlot(focusSlot) {
   }
 }
 
+/** Get all watched thread refs from non-done tasks. Returns Map<ref, taskId>. */
+export function getWatchedThreadRefs(data) {
+  const map = new Map()
+  for (const [listName, tasks] of Object.entries(data.lists)) {
+    if (!tasks || listName === 'done') continue
+    for (const t of tasks) {
+      if (t.slackWatch?.ref) map.set(t.slackWatch.ref, t.id)
+    }
+  }
+  return map
+}
+
 // In-memory env status store
 const envStatus = {}
 

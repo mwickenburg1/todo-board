@@ -24,8 +24,10 @@ import eventsRouter from './routes/events.js'
 import envStatusRouter from './routes/env-status.js'
 import focusQueueRouter from './focus-queue.js'
 import { startSlackDigest, acknowledgeDigest, resetAck } from './slack-digest.js'
+import { getTrackedPublicThreadRefs, trackThread, notifyThreadActivity } from './slack-scanners.js'
 import { slack as slackApi } from './slack-api.js'
 import { parseSlackUrl, extractThreadContext, fetchThreadMessages, fetchChannelMessages, fetchDMThreadReplies, setReadCursor, getAllReadCursors } from './slack-extract.js'
+import { updateWatchFromContext } from './slack-watch.js'
 import { markRoutineChecked, isRoutineCheckedToday, clearStaleChecks } from './routine-state.js'
 import { getSnoozeMap } from './snooze-state.js'
 import { ROUTINE_ITEMS } from './routine-items.js'
@@ -240,11 +242,42 @@ app.post('/api/slack-reply/:channel/:threadTs', async (req, res) => {
     })
     const data = await r.json()
     if (!data.ok) return res.status(400).json({ error: data.error })
+    // Fast-track: immediately add this thread to tracking for Socket Mode
+    if (threadTs !== 'channel') {
+      trackThread(channel, threadTs).catch(() => {})
+    }
+    // Update slackWatch state on any task watching this thread
+    try {
+      const todoData = readData()
+      let watchChanged = false
+      const nowTs = String(Date.now() / 1000)
+      for (const [, tasks] of Object.entries(todoData.lists)) {
+        if (!tasks) continue
+        for (const task of tasks) {
+          if (task.slackWatch?.ref === `${channel}/${threadTs}`) {
+            if (updateWatchFromContext(task, [{ who: 'me', ts: nowTs }])) watchChanged = true
+          }
+        }
+      }
+      if (watchChanged) saveData(todoData)
+    } catch {}
     res.json({ ok: true, ts: data.ts })
   } catch (err) {
     console.error('[slack-reply] error:', err.message)
     res.status(500).json({ error: err.message })
   }
+})
+
+// Expose tracked public thread refs for the event-hub to merge into Socket Mode watch list
+app.get('/api/tracked-thread-refs', (_req, res) => {
+  res.json(getTrackedPublicThreadRefs())
+})
+
+// Receive Socket Mode notifications for tracked threads
+app.post('/api/thread-activity', (req, res) => {
+  const { channel, threadTs } = req.body || {}
+  if (channel && threadTs) notifyThreadActivity(channel, threadTs)
+  res.json({ ok: true })
 })
 
 app.get('/api/slack-cursors', (req, res) => {

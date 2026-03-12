@@ -4,6 +4,7 @@ import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { readData, saveData, findTask, createTask, insertInList, createEmptySlot } from '../store.js'
 import { parseInput, placeSectionBefore } from '../helpers.js'
+import { getConversation, addMessage, clearConversation } from '../conversations.js'
 
 // Load .env for Slack token (used in thread root resolution)
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -281,6 +282,10 @@ router.patch('/:id', (req, res) => {
       if (req.body.notes === null || req.body.notes === '') delete task.notes
       else task.notes = req.body.notes
     }
+    if (req.body.slackWatch !== undefined) {
+      if (req.body.slackWatch === null) delete task.slackWatch
+      else task.slackWatch = { ...(task.slackWatch || {}), ...req.body.slackWatch }
+    }
     if (escalation !== undefined) {
       // Only one item per escalation level — clear others first
       if (escalation > 0) {
@@ -434,6 +439,41 @@ router.get('/:id/events', (req, res) => {
     const result = findTask(data, id)
     if (!result) return res.status(404).json({ error: 'Task not found' })
     res.json({ events: result.task.events || [], links: result.task.links || [] })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Get conversation for a task
+router.get('/:id/conversation', (req, res) => {
+  try {
+    const id = parseInt(req.params.id)
+    const convo = getConversation(id)
+    res.json(convo)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Add a message to a task's conversation (triggers LLM reply)
+router.post('/:id/conversation', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id)
+    const { message } = req.body
+    if (!message || typeof message !== 'string') return res.status(400).json({ error: 'message required' })
+    const convo = await addMessage(id, message)
+    res.json(convo)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Clear a task's conversation
+router.delete('/:id/conversation', (req, res) => {
+  try {
+    const id = parseInt(req.params.id)
+    clearConversation(id)
+    res.json({ success: true })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

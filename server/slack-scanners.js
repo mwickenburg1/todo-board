@@ -20,6 +20,7 @@ export async function scanUnrepliedDMs(since) {
     const ts = parseFloat(m.ts)
     if (ts < since) continue
     const sender = m.user ? await resolveUser(m.user) : (m.username || 'unknown')
+    if (BOT_SENDERS.has(sender)) continue
     const chId = m.channel?.id
     if (!chId) continue
     if (!channelMap.has(chId) || ts > channelMap.get(chId).ts) {
@@ -48,13 +49,13 @@ export async function scanUnrepliedDMs(since) {
     // Build a timeline: top-level messages + thread replies, sorted by ts
     const allMessages = []
     for (const m of msgs) {
-      if (m.subtype) continue
-      allMessages.push({ user: m.user, text: m.text || '', ts: m.ts, isThread: false })
+      if (m.subtype && m.subtype !== 'bot_message') continue
+      allMessages.push({ user: m.user || m.bot_id, text: m.text || '', ts: m.ts, isThread: false, username: m.username })
       // Insert thread replies right after their parent
       const replies = threadReplies.get(m.ts)
       if (replies) {
         for (const r of replies) {
-          allMessages.push({ user: r.user, text: r.text || '', ts: r.ts, isThread: true, parentTs: m.ts })
+          allMessages.push({ user: r.user || r.bot_id, text: r.text || '', ts: r.ts, isThread: true, parentTs: m.ts, username: r.username })
         }
       }
     }
@@ -70,7 +71,7 @@ export async function scanUnrepliedDMs(since) {
     if (!replied) {
       const context = []
       for (const m of allMessages) {
-        const who = m.user === USER_ID ? 'me' : await resolveUser(m.user)
+        const who = m.user === USER_ID ? 'me' : (m.username || await resolveUser(m.user))
         const prefix = m.isThread ? '↳ ' : ''
         context.push({ who, text: prefix + await cleanMentions(m.text), ts: m.ts })
       }
@@ -93,9 +94,8 @@ export async function scanMentions(since) {
 
   if (!r.ok) return []
 
-  // Dedupe by thread (channel+threadTs) — keep one mention per thread
-  const seen = new Set()
-  const mentions = []
+  // Pre-filter candidates
+  const candidates = []
   for (const m of (r.messages?.matches || [])) {
     const ts = parseFloat(m.ts)
     if (ts < since) continue
@@ -103,24 +103,23 @@ export async function scanMentions(since) {
     if (BOT_SENDERS.has(sender) || sender === 'mwickenburg') continue
     const chId = m.channel?.id
     if (!chId) continue
+    candidates.push(m)
+  }
+
+  // Dedupe by thread (channel+threadTs) — keep one mention per thread
+  // Note: skip conversations.replies verification — thread_ts from search is good enough
+  // for dedup, and the verification was adding 30-40s of serial API calls
+  const seen = new Set()
+  const mentions = []
+  for (const m of candidates) {
+    const chId = m.channel.id
     const chName = m.channel?.name || '?'
-    // Thread ts if in a thread, else the message's own ts
-    // Slack search API sometimes returns thread_ts=null for thread replies — verify via conversations.replies
-    let threadTs = m.thread_ts
-    if (!threadTs) {
-      try {
-        const verify = await slack('conversations.replies', { channel: chId, ts: m.ts, limit: 1 })
-        if (verify.ok && verify.messages?.[0]?.thread_ts && verify.messages[0].thread_ts !== m.ts) {
-          threadTs = verify.messages[0].thread_ts
-        }
-      } catch {}
-    }
-    threadTs = threadTs || m.ts
+    const threadTs = m.thread_ts || m.ts
     const key = `${chId}:${threadTs}`
     if (seen.has(key)) continue
     seen.add(key)
     mentions.push({
-      sender,
+      sender: m.username || 'unknown',
       channel: chName.startsWith('U') ? 'DM' : `#${chName}`,
       channelName: chName,
       text: await cleanMentions((m.text || '').slice(0, 120)),
@@ -185,74 +184,100 @@ export async function scanCrashes(since) {
 }
 
 // --- Thread activity scanner ---
-// Discovery: search active channels for threads I'm in -> tracked set
-// Monitoring: check tracked threads directly via conversations.replies
+// Discovery: search active channels for threads I'm in -> tracked set (runs every 5 min)
+// Monitoring: Socket Mode handles public threads in real-time; only private threads are polled.
 
-let activeChannelsCache = null
-let activeChannelsCacheTime = 0
-const CHANNEL_CACHE_TTL = 30 * 60 * 1000
+const DISCOVERY_INTERVAL = 5 * 60 * 1000 // 5 min between discovery runs
+let lastDiscoveryTime = 0
 const THREAD_STALE_DAYS = 7
 const trackedThreads = new Map()
+// Channels where bot join failed (private channels) — checked once per channel
+const privateChanIds = new Set()
+const publicChanIds = new Set()
 
-async function getActiveChannels() {
-  if (activeChannelsCache && Date.now() - activeChannelsCacheTime < CHANNEL_CACHE_TTL) {
-    return activeChannelsCache
+/** Check if a channel is public via conversations.info. Caches result. */
+async function isChannelPublic(chId) {
+  if (publicChanIds.has(chId)) return true
+  if (privateChanIds.has(chId)) return false
+  if (chId.startsWith('D') || chId.startsWith('G')) {
+    privateChanIds.add(chId)
+    return false
   }
-  const searchDate = new Date(Date.now() - 7 * 86400 * 1000).toISOString().split('T')[0]
+  try {
+    const result = await slack('conversations.info', { channel: chId })
+    if (result.ok && result.channel) {
+      const isPublic = result.channel.is_channel && !result.channel.is_private
+      ;(isPublic ? publicChanIds : privateChanIds).add(chId)
+      return isPublic
+    }
+    privateChanIds.add(chId)
+    return false
+  } catch {
+    privateChanIds.add(chId)
+    return false
+  }
+}
+
+/**
+ * Discover threads I participated in via search API.
+ * Extracts thread_ts from permalink — 1 API call instead of ~120.
+ */
+async function discoverThreads() {
+  const searchDate = new Date(Date.now() - THREAD_STALE_DAYS * 86400 * 1000).toISOString().split('T')[0]
   const r = await slack('search.messages', {
     query: `from:me -is:dm after:${searchDate}`,
     sort: 'timestamp', sort_dir: 'desc', count: 100,
   }, { useSearch: true })
-  if (!r.ok) return activeChannelsCache || new Map()
+  if (!r.ok) return
 
-  const channels = new Map()
+  // Extract unique threads from permalink's thread_ts param
+  const newThreads = new Map()
   for (const m of (r.messages?.matches || [])) {
-    if (m.channel?.id && !channels.has(m.channel.id)) {
-      channels.set(m.channel.id, m.channel.name)
-    }
-  }
-  activeChannelsCache = channels
-  activeChannelsCacheTime = Date.now()
-  return channels
-}
-
-async function discoverThreads(since) {
-  const channels = await getActiveChannels()
-
-  for (const [chId, chName] of channels) {
+    const chId = m.channel?.id
+    const chName = m.channel?.name
+    if (!chId || chId.startsWith('D')) continue
     if (chId === CRASHES_CHANNEL || chId === INCIDENTS_CHANNEL) continue
-
-    const h = await slack('conversations.history', { channel: chId, limit: 20 })
-    if (!h.ok) continue
-
-    for (const m of (h.messages || [])) {
-      if (!m.reply_count || m.reply_count === 0) continue
-      const latestReply = parseFloat(m.latest_reply || '0')
-      if (latestReply < since) continue
-      const key = `${chId}:${m.ts}`
-      if (trackedThreads.has(key)) continue
-
-      const replies = await slack('conversations.replies', { channel: chId, ts: m.ts, limit: 50 })
-      if (!replies.ok) continue
-
-      const participants = new Set(replies.messages?.map(r => r.user))
-      if (!participants.has(USER_ID)) continue
-
-      trackedThreads.set(key, { channelId: chId, channelName: chName, threadTs: m.ts, lastActivity: latestReply })
+    const threadMatch = m.permalink?.match(/thread_ts=([0-9.]+)/)
+    if (!threadMatch) continue // top-level message, not in a thread
+    const threadTs = threadMatch[1]
+    const key = `${chId}:${threadTs}`
+    if (!trackedThreads.has(key) && !newThreads.has(key)) {
+      newThreads.set(key, { chId, chName, threadTs })
     }
   }
+
+  // Resolve public/private for new threads (parallel, batched)
+  const entries = [...newThreads.entries()]
+  const batchSize = 5
+  for (let i = 0; i < entries.length; i += batchSize) {
+    await Promise.all(entries.slice(i, i + batchSize).map(async ([key, { chId, chName, threadTs }]) => {
+      const isPublic = await isChannelPublic(chId)
+      trackedThreads.set(key, { channelId: chId, channelName: chName, threadTs, lastActivity: Date.now() / 1000, isPublic })
+    }))
+  }
+
+  lastDiscoveryTime = Date.now()
+  const pub = [...trackedThreads.values()].filter(t => t.isPublic).length
+  console.log(`[thread-monitor] Discovery: ${trackedThreads.size} tracked (${pub} socket, ${trackedThreads.size - pub} polled)`)
 }
 
 export async function scanThreadActivity(since) {
-  await discoverThreads(since)
+  // Throttle discovery — only run every 5 min
+  if (!lastDiscoveryTime || Date.now() - lastDiscoveryTime > DISCOVERY_INTERVAL) {
+    await discoverThreads(since)
+  }
 
   const staleThreshold = Date.now() / 1000 - THREAD_STALE_DAYS * 86400
   for (const [key, t] of trackedThreads) {
     if (t.lastActivity < staleThreshold) trackedThreads.delete(key)
   }
 
+  // Only poll private threads + public threads with pending Socket Mode notifications
   const results = []
   for (const [key, t] of trackedThreads) {
+    if (t.isPublic && !t.needsPoll) continue // Socket Mode watches these; skip unless notified
+    if (t.needsPoll) t.needsPoll = false
+
     const replies = await slack('conversations.replies', { channel: t.channelId, ts: t.threadTs, limit: 50 })
     if (!replies.ok) continue
 
@@ -264,33 +289,81 @@ export async function scanThreadActivity(since) {
     const newReplies = msgs.filter(r =>
       parseFloat(r.ts) > since && r.user !== USER_ID
     )
-    if (newReplies.length === 0) continue
 
-    // Skip if I already replied after the last message from someone else
-    const lastOtherTs = parseFloat(newReplies[newReplies.length - 1].ts)
-    const myReplyAfter = msgs.some(r => r.user === USER_ID && parseFloat(r.ts) > lastOtherTs)
-    if (myReplyAfter) continue
+    // Check if I have any new replies in this thread (for watch state updates)
+    const myNewReplies = msgs.filter(r =>
+      parseFloat(r.ts) > since && r.user === USER_ID
+    )
 
+    if (newReplies.length === 0 && myNewReplies.length === 0) continue
+
+    // Build context for both pulse items and watch state
     const context = []
     for (const r of msgs.slice(-10)) {
       const who = r.user === USER_ID ? 'me' : await resolveUser(r.user)
       context.push({ who, text: await cleanMentions((r.text || '').slice(0, 200)), ts: r.ts })
     }
 
-    const latest = newReplies[newReplies.length - 1]
-    const latestName = await resolveUser(latest.user)
+    // Skip from pulse if I already replied after the last message from someone else
+    const lastOtherTs = newReplies.length > 0 ? parseFloat(newReplies[newReplies.length - 1].ts) : 0
+    const myReplyAfter = lastOtherTs > 0 && msgs.some(r => r.user === USER_ID && parseFloat(r.ts) > lastOtherTs)
+
+    const latest = newReplies.length > 0 ? newReplies[newReplies.length - 1] : null
+    const latestName = latest ? await resolveUser(latest.user) : null
     results.push({
       channel: t.channelName,
       from: latestName,
-      text: (latest.text || '').slice(0, 80),
+      text: latest ? (latest.text || '').slice(0, 80) : '',
       parentText: (msgs[0]?.text || '').slice(0, 60),
-      ts: parseFloat(latest.ts),
+      ts: latest ? parseFloat(latest.ts) : 0,
       threadKey: key,
       context,
+      myReplyHandled: myReplyAfter || newReplies.length === 0,
     })
   }
 
   return results
+}
+
+/**
+ * Get public tracked thread refs for Socket Mode watch list.
+ * Returns array of "channelId/threadTs" strings.
+ */
+export function getTrackedPublicThreadRefs() {
+  const refs = []
+  for (const [, t] of trackedThreads) {
+    if (t.isPublic) refs.push(`${t.channelId}/${t.threadTs}`)
+  }
+  return refs
+}
+
+/**
+ * Notify that a public tracked thread received a new message (from Socket Mode).
+ * Marks the thread for a one-time poll on the next scan cycle to build context.
+ */
+export function notifyThreadActivity(channelId, threadTs) {
+  const key = `${channelId}:${threadTs}`
+  const t = trackedThreads.get(key)
+  if (t) {
+    t.needsPoll = true
+    t.lastActivity = Date.now() / 1000
+  }
+}
+
+/**
+ * Fast-track: immediately add a thread to tracking when user sends a reply.
+ */
+export async function trackThread(channelId, threadTs, channelName) {
+  const key = `${channelId}:${threadTs}`
+  if (trackedThreads.has(key)) return
+  const isPublic = await isChannelPublic(channelId)
+  trackedThreads.set(key, {
+    channelId,
+    channelName: channelName || channelId,
+    threadTs,
+    lastActivity: Date.now() / 1000,
+    isPublic,
+  })
 }
 
 // --- Incidents ---

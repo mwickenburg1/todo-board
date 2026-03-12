@@ -7,10 +7,11 @@
 
 import { readFileSync, writeFileSync } from 'fs'
 import { resolve } from 'path'
-import { readData, saveData, createTask } from './store.js'
+import { readData, saveData, createTask, getWatchedThreadRefs } from './store.js'
 import { SLACK_TOKEN, INITIAL_LOOKBACK_HOURS } from './slack-api.js'
-import { analyzeCrashes, analyzeIncidentChannel, clearAnalysisCache } from './slack-llm.js'
+import { analyzeCrashes, analyzeIncidentChannel, clearAnalysisCache, callSonnet } from './slack-llm.js'
 import { triageSlackItem } from './slack-triage.js'
+import { updateWatchFromContext } from './slack-watch.js'
 import { scanUnrepliedDMs, scanMentions, scanCrashes, scanThreadActivity, scanNewIncidents, readIncidentChannelMessages } from './slack-scanners.js'
 
 // --- Acknowledgment state (persisted to disk) ---
@@ -62,15 +63,33 @@ async function updateDigest() {
   try {
     const now = Math.floor(Date.now() / 1000)
     const since = ackedEpoch > 0 ? ackedEpoch : now - INITIAL_LOOKBACK_HOURS * 3600
+    console.log(`[slack-digest] Scanning since ${new Date(since * 1000).toISOString()} (ackedEpoch=${ackedEpoch})`)
 
+    console.log('[slack-digest] Starting parallel scans: DMs, mentions, crashes, incidents...')
+    const scanStart = Date.now()
     const [unrepliedDMs, mentions, crashes, newIncidents] = await Promise.all([
-      scanUnrepliedDMs(since),
-      scanMentions(since),
-      scanCrashes(since),
-      scanNewIncidents(since),
+      scanUnrepliedDMs(since).then(r => { console.log(`[slack-digest]   DMs done: ${r.length} unreplied (${Date.now() - scanStart}ms)`); return r }),
+      scanMentions(since).then(r => { console.log(`[slack-digest]   Mentions done: ${r.length} (${Date.now() - scanStart}ms)`); return r }),
+      scanCrashes(since).then(r => { console.log(`[slack-digest]   Crashes done (${Date.now() - scanStart}ms)`); return r }),
+      scanNewIncidents(since).then(r => { console.log(`[slack-digest]   Incidents done: ${r.length} (${Date.now() - scanStart}ms)`); return r }),
     ])
-    // Thread scanner runs sequentially — many API calls, would hit rate limits in parallel
-    const threadActivity = await scanThreadActivity(since)
+    // Thread scanner — run async, don't block digest on cold start discovery
+    console.log('[slack-digest] Starting thread activity scan...')
+    let threadActivity = []
+    const threadPromise = scanThreadActivity(since).then(r => {
+      console.log(`[slack-digest] Thread scan done: ${r.length} active (${Date.now() - scanStart}ms)`)
+      return r
+    })
+    // Wait up to 5s for thread scan; if it takes longer (cold start discovery), proceed without it
+    const timeout = new Promise(resolve => setTimeout(() => resolve(null), 5000))
+    const threadResult = await Promise.race([threadPromise, timeout])
+    if (threadResult !== null) {
+      threadActivity = threadResult
+    } else {
+      console.log(`[slack-digest] Thread scan still running (discovery), proceeding without thread data`)
+      // Let it finish in background — next cycle will have cached discovery
+      threadPromise.catch(() => {})
+    }
 
     const sinceLabel = ackedEpoch > 0 ? `since ${estTimeStr(ackedEpoch)}` : `${INITIAL_LOOKBACK_HOURS}h`
     const items = []
@@ -83,12 +102,15 @@ async function updateDigest() {
 
     // DMs — unified triage (urgency + suggestion in one call)
     if (unrepliedDMs.length > 0) {
+      console.log(`[slack-digest] Triaging ${unrepliedDMs.length} DMs...`)
+      const triageStart = Date.now()
       const triages = await Promise.all(
         unrepliedDMs.map(dm => triageSlackItem(`dm:${dm.chId}`, 'dm', {
           person: dm.person,
           messages: (dm.context || []).sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts)),
         }))
       )
+      console.log(`[slack-digest] DM triage done (${Date.now() - triageStart}ms)`)
       const urgent = []
       const notUrgent = []
       for (let i = 0; i < unrepliedDMs.length; i++) {
@@ -101,7 +123,7 @@ async function updateDigest() {
         if (!t || t.urgency === 'FYI') {
           notUrgent.push(dm.person)
         } else {
-          const suggestion = t.action ? JSON.stringify({ action: t.action, draft: t.draft }) : null
+          const suggestion = t.action ? JSON.stringify({ action: t.action, draft: t.draft, actions: t.actions }) : null
           urgent.push({ person: dm.person, summary: t.summary || 'needs response', thread, chId: dm.chId, latestTs, suggestion })
         }
       }
@@ -115,6 +137,8 @@ async function updateDigest() {
 
     // @mentions — unified triage (urgency + suggestion in one call)
     if (mentions.length > 0) {
+      console.log(`[slack-digest] Triaging ${mentions.length} mentions...`)
+      const mentionTriageStart = Date.now()
       const triages = await Promise.all(
         mentions.map(m => triageSlackItem(
           `mention:${m.chId}:${m.threadTs}`,
@@ -125,6 +149,7 @@ async function updateDigest() {
           }
         ))
       )
+      console.log(`[slack-digest] Mention triage done (${Date.now() - mentionTriageStart}ms)`)
       const actionMentions = []
       const fyiMentions = []
       for (let i = 0; i < mentions.length; i++) {
@@ -138,7 +163,7 @@ async function updateDigest() {
         if (!t || t.urgency === 'FYI') {
           fyiMentions.push({ sender: m.sender, channel: m.channel })
         } else {
-          const suggestion = t.action ? JSON.stringify({ action: t.action, draft: t.draft }) : null
+          const suggestion = t.action ? JSON.stringify({ action: t.action, draft: t.draft, actions: t.actions }) : null
           actionMentions.push({
             text: `${m.sender} in ${m.channel}: ${t.summary || m.text}`,
             slackThread: thread.length > 0 ? thread : undefined,
@@ -158,17 +183,19 @@ async function updateDigest() {
     }
 
     // Threads — unified triage (urgency + suggestion in one call)
-    if (threadActivity.length > 0) {
+    // Filter out threads where I already replied (they still appear in threadActivity for watch state updates)
+    const pulseThreads = threadActivity.filter(t => !t.myReplyHandled)
+    if (pulseThreads.length > 0) {
       const triages = await Promise.all(
-        threadActivity.map(t => triageSlackItem(t.threadKey, 'thread', {
+        pulseThreads.map(t => triageSlackItem(t.threadKey, 'thread', {
           channel: t.channel,
           messages: (t.context || []).sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts)),
         }))
       )
       const actionNeeded = []
       const fyi = []
-      for (let i = 0; i < threadActivity.length; i++) {
-        const t = threadActivity[i]
+      for (let i = 0; i < pulseThreads.length; i++) {
+        const t = pulseThreads[i]
         const tr = triages[i]
         const thread = (t.context || []).slice(-5).map(m => ({
           who: m.who, text: (m.text || '').slice(0, 200),
@@ -178,7 +205,7 @@ async function updateDigest() {
         if (!tr || tr.urgency === 'FYI') {
           fyi.push({ channel: t.channel, from: t.from })
         } else {
-          const suggestion = tr.action ? JSON.stringify({ action: tr.action, draft: tr.draft }) : null
+          const suggestion = tr.action ? JSON.stringify({ action: tr.action, draft: tr.draft, actions: tr.actions }) : null
           actionNeeded.push({ channel: t.channel, from: t.from, summary: tr.summary || `${t.from} replied`, thread, slackRef, latestTs, suggestion })
         }
       }
@@ -238,13 +265,88 @@ async function updateDigest() {
 
     // Suggestions already included from unified triage — no separate pass needed
 
-    // Update pulse list — atomic replace to avoid flicker during 500ms poll
+    // Dedup: filter out items whose thread/DM is watched by a task
     const data = readData()
+    const watchedRefs = getWatchedThreadRefs(data)
+
+    // For DM watches, run LLM relevance check — collect tasks with DM watches
+    const dmWatchTasks = []
+    for (const [listName, tasks] of Object.entries(data.lists)) {
+      if (!tasks || listName === 'done') continue
+      for (const task of tasks) {
+        if (!task.slackWatch?.ref) continue
+        if (!task.slackWatch.ref.includes('/')) {
+          dmWatchTasks.push({ task, listName })
+        }
+      }
+    }
+
+    // Check DM relevance for each DM-watched channel with new messages
+    const dmRelevanceCache = new Map() // channelId → Map<taskId, boolean>
+    for (const { task } of dmWatchTasks) {
+      const chId = task.slackWatch.ref
+      const dmMatch = unrepliedDMs.find(dm => dm.chId === chId)
+      if (dmMatch && dmMatch.context?.length > 0) {
+        const isRelevant = await checkDMRelevance(task.text, dmMatch.context)
+        if (!dmRelevanceCache.has(chId)) dmRelevanceCache.set(chId, new Map())
+        dmRelevanceCache.get(chId).set(task.id, isRelevant)
+        if (isRelevant) {
+          console.log(`[slack-digest] DM ${chId} relevant to task "${task.text.slice(0, 40)}"`)
+        }
+      }
+    }
+
+    const dedupedItems = filteredItems.filter(item => {
+      if (!item.slackRef) return true
+      if (!watchedRefs.has(item.slackRef)) return true
+      // Thread watches: always suppress
+      if (item.slackRef.includes('/')) return false
+      // DM watches: suppress only if relevant to ANY watched task on this channel
+      const channelRelevance = dmRelevanceCache.get(item.slackRef)
+      if (channelRelevance) {
+        for (const [, isRelevant] of channelRelevance) {
+          if (isRelevant) return false // relevant → suppress (surfaces via task)
+        }
+        return true // not relevant to any task → show as new pulse item
+      }
+      return true // no relevance data → show it
+    })
+
+    // Update watched task states with thread activity from scanners
+    if (threadActivity.length > 0 || unrepliedDMs.length > 0) {
+      let watchChanged = false
+      for (const [listName, tasks] of Object.entries(data.lists)) {
+        if (!tasks || listName === 'done') continue
+        for (const task of tasks) {
+          if (!task.slackWatch?.ref) continue
+          const ref = task.slackWatch.ref
+          const [chId, threadTs] = ref.split('/')
+
+          // Check thread activity
+          const threadMatch = threadActivity.find(t => t.threadKey === `${chId}:${threadTs}`)
+          if (threadMatch) {
+            if (updateWatchFromContext(task, threadMatch.context || [])) watchChanged = true
+          }
+
+          // Check DMs — only update watch state if LLM says messages are relevant
+          if (!threadTs) {
+            const dmMatch = unrepliedDMs.find(dm => dm.chId === chId)
+            if (dmMatch) {
+              const isRelevant = dmRelevanceCache.get(chId)?.get(task.id)
+              if (updateWatchFromContext(task, dmMatch.context || [], { checkRelevance: true, isRelevant })) watchChanged = true
+            }
+          }
+        }
+      }
+      if (watchChanged) saveData(data)
+    }
+
+    // Update pulse list — atomic replace to avoid flicker during 500ms poll
     if (!data.lists.pulse) data.lists.pulse = []
 
     // Build new slack items first — skip priority<=0 items (FYI/stable, never shown in queue)
     const newSlackItems = []
-    const actionableItems = filteredItems.filter(i => i.priority > 0)
+    const actionableItems = dedupedItems.filter(i => i.priority > 0)
     if (actionableItems.length > 0) {
       actionableItems.unshift({ text: sinceLabel, context: 'slack-header', priority: -1 })
       for (const item of actionableItems) {
@@ -257,8 +359,8 @@ async function updateDigest() {
     data.lists.pulse = [...nonSlack, ...newSlackItems]
 
     saveData(data)
-    const hasIssues = filteredItems.some(i => i.priority > 0)
-    console.log(`[slack-digest] ${hasIssues ? 'Issues found' : 'All clear'} (${sinceLabel}): ${filteredItems.filter(i => i.context !== 'slack-header').map(i => i.text).join(' | ') || 'nothing to report'}`)
+    const hasIssues = dedupedItems.some(i => i.priority > 0)
+    console.log(`[slack-digest] ${hasIssues ? 'Issues found' : 'All clear'} (${sinceLabel}): ${dedupedItems.filter(i => i.context !== 'slack-header').map(i => i.text).join(' | ') || 'nothing to report'}`)
   } catch (err) {
     console.error(`[slack-digest] Error:`, err.message)
   } finally {
@@ -304,6 +406,35 @@ export function acknowledgeDigest() {
   // Trigger re-scan after a short delay
   setTimeout(updateDigest, 500)
   return ackedEpoch
+}
+
+/**
+ * Check if recent DM messages are relevant to a watched task.
+ * Returns true if messages relate to the task topic, false otherwise.
+ * Defaults to true (don't suppress) if LLM is unavailable.
+ */
+export async function checkDMRelevance(taskText, recentMessages, opts = {}) {
+  if (!recentMessages || recentMessages.length === 0) return false
+  if (opts.llmUnavailable) return true
+
+  const transcript = recentMessages
+    .map(m => `${m.who}: ${m.text}`)
+    .join('\n')
+
+  const prompt = `You are checking if a DM conversation is about the same topic as a task.
+
+Task: "${taskText}"
+
+Recent messages:
+${transcript}
+
+Are these messages about the same topic as the task? Consider indirect references, related follow-ups, and contextual connections.
+
+Reply with ONLY "yes" or "no".`
+
+  const result = await callSonnet(prompt)
+  if (!result) return true // LLM unavailable → safe default
+  return result.trim().toLowerCase().startsWith('yes')
 }
 
 export function startSlackDigest() {

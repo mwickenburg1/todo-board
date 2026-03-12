@@ -12,11 +12,21 @@ export interface SlackContext {
   threadPreview: string
 }
 
+interface ActionHint {
+  type: 'reply' | 'track' | 'watch' | 'done' | 'snooze'
+  draft?: string
+  taskText?: string
+  delegateOnly?: boolean
+  checkHours?: number
+}
+
 interface NewItemFlowProps {
   onClose: () => void
-  onCreate: (text: string, type?: ItemType, snoozeMins?: number, slackContext?: SlackContext, deadline?: string) => void
+  onCreate: (text: string, type?: ItemType, snoozeMins?: number, slackContext?: SlackContext, deadline?: string, delegateOnly?: boolean, checkHours?: number) => void
   isCreateTask?: boolean
   prefill?: string
+  slackRef?: string | null
+  actionHint?: ActionHint | null
 }
 
 const TYPE_OPTIONS: { type: ItemType; label: string; keys: string; color: string }[] = [
@@ -26,14 +36,21 @@ const TYPE_OPTIONS: { type: ItemType; label: string; keys: string; color: string
 ]
 
 const SNOOZE_OPTIONS = [5, 10, 15]
+const NUDGE_OPTIONS = [4, 8, 12, 24, 48]
 
 const SLACK_URL_RE = /^https:\/\/[^/]+\.slack\.com\/archives\/[A-Z0-9]+\/p\d+/
 
-export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill = '' }: NewItemFlowProps) {
+export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill = '', slackRef = null, actionHint = null }: NewItemFlowProps) {
   const [text, setText] = useState(prefill)
   const [selectedIdx, setSelectedIdx] = useState(0)
   const [snoozeMins, setSnoozeMins] = useState(5)
-  const [focusArea, setFocusArea] = useState<'text' | 'type' | 'snooze' | 'deadline'>('text')
+  const [delegateOnly, setDelegateOnly] = useState(actionHint?.delegateOnly ?? false)
+  const [checkHours, setCheckHours] = useState(actionHint?.checkHours ?? 24)
+  // If actionHint provided with a taskText, skip text input and go straight to type picker
+  const [focusArea, setFocusArea] = useState<'text' | 'type' | 'mode' | 'nudge' | 'snooze' | 'deadline'>(
+    actionHint?.taskText ? 'type' : 'text'
+  )
+  const isWatch = isCreateTask && !!slackRef
   const [slackContext, setSlackContext] = useState<SlackContext | null>(null)
   const [slackLoading, setSlackLoading] = useState(false)
   const [deadlineText, setDeadlineText] = useState('')
@@ -73,7 +90,7 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
       } catch { /* proceed without deadline */ }
     }
     const snoose = selectedType === 'fire-drill' ? snoozeMins : undefined
-    onCreate(trimmed, selectedType, snoose, slackContext || undefined, finalDeadline || undefined)
+    onCreate(trimmed, selectedType, snoose, slackContext || undefined, finalDeadline || undefined, isWatch ? delegateOnly : undefined, isWatch ? checkHours : undefined)
     onClose()
   }
 
@@ -178,10 +195,11 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
           setFocusArea('text')
           return
         }
-        // Down goes to snooze if fire drill, otherwise deadline
+        // Down goes to mode (if watch), snooze (if fire drill), or deadline
         if (e.key === 'ArrowDown') {
           e.preventDefault()
-          if (showSnooze) setFocusArea('snooze')
+          if (isWatch) setFocusArea('mode')
+          else if (showSnooze) setFocusArea('snooze')
           else { setFocusArea('deadline'); setTimeout(() => deadlineRef.current?.focus(), 0) }
           return
         }
@@ -194,10 +212,61 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
         }
       }
 
-      if (focusArea === 'snooze') {
+      if (focusArea === 'mode') {
         if (e.key === 'ArrowUp') {
           e.preventDefault()
           setFocusArea('type')
+          return
+        }
+        if (e.key === 'ArrowDown') {
+          e.preventDefault()
+          setFocusArea('nudge')
+          return
+        }
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+          e.preventDefault()
+          setDelegateOnly(prev => !prev)
+          return
+        }
+      }
+
+      if (focusArea === 'nudge') {
+        if (e.key === 'ArrowUp') {
+          e.preventDefault()
+          setFocusArea('mode')
+          return
+        }
+        if (e.key === 'ArrowDown') {
+          e.preventDefault()
+          if (showSnooze) setFocusArea('snooze')
+          else { setFocusArea('deadline'); setTimeout(() => deadlineRef.current?.focus(), 0) }
+          return
+        }
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault()
+          setCheckHours(prev => {
+            const opts = NUDGE_OPTIONS
+            const idx = opts.indexOf(prev)
+            return opts[Math.max(0, idx - 1)]
+          })
+          return
+        }
+        if (e.key === 'ArrowRight') {
+          e.preventDefault()
+          setCheckHours(prev => {
+            const opts = NUDGE_OPTIONS
+            const idx = opts.indexOf(prev)
+            return opts[Math.min(opts.length - 1, idx + 1)]
+          })
+          return
+        }
+      }
+
+      if (focusArea === 'snooze') {
+        if (e.key === 'ArrowUp') {
+          e.preventDefault()
+          if (isWatch) setFocusArea('nudge')
+          else setFocusArea('type')
           return
         }
         if (e.key === 'ArrowDown') {
@@ -224,7 +293,7 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [focusArea, selectedIdx, text, snoozeMins, showSnooze, deadlineIso, deadlineText]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [focusArea, selectedIdx, text, snoozeMins, showSnooze, isWatch, delegateOnly, checkHours, deadlineIso, deadlineText]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div
@@ -236,11 +305,13 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
         {/* Input */}
         <div className="flex items-center gap-3 px-6 py-4">
           <span className={`text-[11px] font-semibold tracking-[0.12em] uppercase shrink-0 ${
-            isCreateTask
-              ? 'text-amber-500 dark:text-amber-400'
-              : 'text-gray-400 dark:text-gray-500'
+            isWatch
+              ? 'text-purple-500 dark:text-purple-400'
+              : isCreateTask
+                ? 'text-amber-500 dark:text-amber-400'
+                : 'text-gray-400 dark:text-gray-500'
           }`}>
-            {isCreateTask ? 'Create task' : 'New item'}
+            {isWatch ? 'Watch thread' : isCreateTask ? 'Create task' : 'New item'}
           </span>
           <input
             ref={inputRef}
@@ -287,6 +358,73 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
               </button>
             ))}
             <span className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-gray-300 dark:text-gray-600">
+              <kbd className="px-1.5 py-0.5 rounded-[4px] font-mono text-[10px] bg-gray-100 dark:bg-white/[0.06] border border-gray-200/80 dark:border-white/[0.08]">&#x2190;</kbd>
+              <kbd className="px-1.5 py-0.5 rounded-[4px] font-mono text-[10px] bg-gray-100 dark:bg-white/[0.06] border border-gray-200/80 dark:border-white/[0.08]">&#x2192;</kbd>
+            </span>
+          </div>
+        )}
+
+        {/* Delegate-only toggle — when watching a Slack thread */}
+        {focusArea !== 'text' && isWatch && (
+          <div className={`border-t border-gray-100 dark:border-white/[0.06] px-6 py-3 flex items-center gap-3 transition-colors ${
+            focusArea === 'mode' ? 'bg-gray-50/50 dark:bg-white/[0.02]' : ''
+          }`}>
+            <span className="text-[12px] text-gray-400 dark:text-gray-500 shrink-0">Mode</span>
+            <button
+              onClick={() => { setDelegateOnly(false); setFocusArea('mode') }}
+              className={`px-3 py-1 rounded-lg text-[13px] font-medium transition-colors cursor-pointer ${
+                !delegateOnly
+                  ? focusArea === 'mode'
+                    ? 'bg-blue-100 dark:bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-300/80 dark:border-blue-400/30 ring-2 ring-blue-200/50 dark:ring-blue-400/20'
+                    : 'bg-blue-100 dark:bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-300/80 dark:border-blue-400/30'
+                  : 'bg-gray-50 dark:bg-white/[0.04] text-gray-400 dark:text-gray-500 border border-gray-200/60 dark:border-white/[0.08]'
+              }`}
+            >
+              Own work
+            </button>
+            <button
+              onClick={() => { setDelegateOnly(true); setFocusArea('mode') }}
+              className={`px-3 py-1 rounded-lg text-[13px] font-medium transition-colors cursor-pointer ${
+                delegateOnly
+                  ? focusArea === 'mode'
+                    ? 'bg-amber-100 dark:bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-300/80 dark:border-amber-400/30 ring-2 ring-amber-200/50 dark:ring-amber-400/20'
+                    : 'bg-amber-100 dark:bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-300/80 dark:border-amber-400/30'
+                  : 'bg-gray-50 dark:bg-white/[0.04] text-gray-400 dark:text-gray-500 border border-gray-200/60 dark:border-white/[0.08]'
+              }`}
+            >
+              Delegate
+            </button>
+            <span className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-gray-300 dark:text-gray-600">
+              <span>{delegateOnly ? 'hidden until reply or nudge' : 'stays in queue'}</span>
+              <kbd className="px-1.5 py-0.5 rounded-[4px] font-mono text-[10px] bg-gray-100 dark:bg-white/[0.06] border border-gray-200/80 dark:border-white/[0.08]">&#x2190;</kbd>
+              <kbd className="px-1.5 py-0.5 rounded-[4px] font-mono text-[10px] bg-gray-100 dark:bg-white/[0.06] border border-gray-200/80 dark:border-white/[0.08]">&#x2192;</kbd>
+            </span>
+          </div>
+        )}
+
+        {/* Nudge interval — when watching a Slack thread */}
+        {focusArea !== 'text' && isWatch && (
+          <div className={`border-t border-gray-100 dark:border-white/[0.06] px-6 py-3 flex items-center gap-3 transition-colors ${
+            focusArea === 'nudge' ? 'bg-gray-50/50 dark:bg-white/[0.02]' : ''
+          }`}>
+            <span className="text-[12px] text-gray-400 dark:text-gray-500 shrink-0">Nudge</span>
+            {NUDGE_OPTIONS.map(h => (
+              <button
+                key={h}
+                onClick={() => { setCheckHours(h); setFocusArea('nudge') }}
+                className={`px-3 py-1 rounded-lg text-[13px] font-medium transition-colors cursor-pointer ${
+                  checkHours === h
+                    ? focusArea === 'nudge'
+                      ? 'bg-purple-100 dark:bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-300/80 dark:border-purple-400/30 ring-2 ring-purple-200/50 dark:ring-purple-400/20'
+                      : 'bg-purple-100 dark:bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-200/80 dark:border-purple-400/20'
+                    : 'bg-gray-50 dark:bg-white/[0.04] text-gray-400 dark:text-gray-500 border border-gray-200/60 dark:border-white/[0.08] hover:border-gray-300 dark:hover:border-white/[0.12]'
+                }`}
+              >
+                {h}h
+              </button>
+            ))}
+            <span className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-gray-300 dark:text-gray-600">
+              <span>resurface if no reply</span>
               <kbd className="px-1.5 py-0.5 rounded-[4px] font-mono text-[10px] bg-gray-100 dark:bg-white/[0.06] border border-gray-200/80 dark:border-white/[0.08]">&#x2190;</kbd>
               <kbd className="px-1.5 py-0.5 rounded-[4px] font-mono text-[10px] bg-gray-100 dark:bg-white/[0.06] border border-gray-200/80 dark:border-white/[0.08]">&#x2192;</kbd>
             </span>
@@ -349,7 +487,7 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
                     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); submit(); return }
                     if (e.key === 'Enter') { e.preventDefault(); parseDeadline() }
                     if (e.key === 'Escape') { e.preventDefault(); onClose() }
-                    if (e.key === 'ArrowUp') { e.preventDefault(); setFocusArea(showSnooze ? 'snooze' : 'type') }
+                    if (e.key === 'ArrowUp') { e.preventDefault(); setFocusArea(showSnooze ? 'snooze' : isWatch ? 'nudge' : 'type') }
                   }}
                   onKeyUp={e => e.stopPropagation()}
                   placeholder="tomorrow, fri 2pm, midday, EOD..."
@@ -399,7 +537,7 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
                   ? 'bg-red-50 dark:bg-red-500/10 text-red-400 dark:text-red-400/60 border-red-200/60 dark:border-red-400/15'
                   : 'bg-blue-50 dark:bg-blue-500/10 text-blue-400 dark:text-blue-400/60 border-blue-200/60 dark:border-blue-400/15'
               }`}>⌘↵</kbd>
-              <span>{isCreateTask ? 'create task' : 'create item'}</span>
+              <span>{isWatch ? 'watch' : isCreateTask ? 'create task' : 'create item'}</span>
             </span>
           </div>
         )}

@@ -1,0 +1,81 @@
+{
+  "next_id": 101,
+  "lists": {
+    "pulse": [
+      {
+        "id": 2,
+        "text": "Mike T: Thread update on deploy issue - rollback completed",
+        "priority": 2,
+        "context": "slack-threads",
+        "status": "pending",
+        "created": "2026-03-08T09:30:00.000Z",
+        "started": null,
+        "completed": null,
+        "parent_id": null,
+        "slackRef": "C04ABCDEF12",
+        "slackThread": [
+          {
+            "user": "Mike T",
+            "text": "Deploy issue in staging - investigating",
+            "ts": "1741417200.000300"
+          },
+          {
+            "user": "Mike T",
+            "text": "Rollback completed, root cause was a bad migration",
+            "ts": "1741420200.000400"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "text": "Dehydrated -> water",
+        "priority": 1,
+        "context": "pulse-check",
+        "status": "pending",
+        "created": "2026-03-08T08:00:00.000Z",
+        "started": null,
+        "completed": null,
+        "parent_id": null
+      }
+    ],
+    "daily-goals": [
+      {
+        "id": 100,
+        "text": "Test fire drill",
+        "priority": 1,
+        "context": "",
+        "status": "pending",
+        "created": "2026-03-08T19:49:59.291Z",
+        "started": null,
+        "completed": null,
+        "parent_id": null,
+        "isFireDrill": true,
+        "escalation": 3,
+        "snoozeMins": 5
+      },
+      {
+        "id": 10,
+        "text": "Finish API integration for customer onboarding",
+        "priority": 2,
+        "context": "",
+        "status": "pending",
+        "created": "2026-03-08T07:00:00.000Z",
+        "started": null,
+        "completed": null,
+        "parent_id": null
+      },
+      {
+        "id": 11,
+        "text": "Review PR for auth refactor",
+        "priority": 1,
+        "context": "",
+        "status": "pending",
+        "created": "2026-03-08T07:30:00.000Z",
+        "started": null,
+        "completed": null,
+        "parent_id": null
+      }
+    ],
+    "done": []
+  }
+}

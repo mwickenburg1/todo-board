@@ -16,6 +16,7 @@
 
 import { Router } from 'express'
 import { readData, saveData, findTask, createTask } from './store.js'
+import { getConversation } from './conversations.js'
 import { acknowledgeDigest, dismissSlackItem } from './slack-digest.js'
 import { markRoutineChecked, isRoutineCheckedToday } from './routine-state.js'
 import { ROUTINE_ITEMS } from './routine-items.js'
@@ -25,6 +26,14 @@ import { hasUnread } from './slack-extract.js'
 import { fetchPRs, getPRs } from './pr-fetcher.js'
 
 const router = Router()
+
+function formatTimeAgo(epochSec) {
+  const d = Date.now() / 1000 - epochSec
+  if (d < 60) return 'just now'
+  if (d < 3600) return `${Math.floor(d / 60)}m ago`
+  if (d < 86400) return `${Math.floor(d / 3600)}h ago`
+  return `${Math.floor(d / 86400)}d ago`
+}
 
 const SELF_AUTHORS = ['matthias', 'mwickenburg']
 function isSelfEvent(author) {
@@ -135,14 +144,16 @@ function computeQueue(data) {
 
     let suggestion = p.suggestion || null
     let draftReply = null
+    let actions = null
     if (suggestion) {
       try {
         const parsed = JSON.parse(suggestion)
         suggestion = parsed.action || suggestion
         draftReply = parsed.draft || null
+        actions = parsed.actions || null
       } catch {}
     }
-    slackItems.push({ id: p.id, score: score + (p.priority * 10), text: p.text, slackThread: p.slackThread, slackRef: p.slackRef, context: p.context, from: p.from || null, channelLabel: p.channelLabel || null, suggestion, draftReply })
+    slackItems.push({ id: p.id, score: score + (p.priority * 10), text: p.text, slackThread: p.slackThread, slackRef: p.slackRef, context: p.context, from: p.from || null, channelLabel: p.channelLabel || null, suggestion, draftReply, actions })
   }
 
   // Each urgent Slack item is its own card
@@ -153,17 +164,26 @@ function computeQueue(data) {
     const verbMap = { 'slack-dms': 'DM', 'slack-mentions': 'Mention', 'slack-threads': 'Thread', 'slack-incidents': 'Incident', 'slack-crashes': 'Crashes' }
     // Clean Slack user mention markup: <@U123|Name> → @Name, <@U123> → @user
     const cleanLabel = summary.replace(/<@[A-Z0-9]+\|([^>]+)>/g, '@$1').replace(/<@[A-Z0-9]+>/g, '@user').replace(/<#[A-Z0-9]+\|([^>]+)>/g, '#$1').replace(/<#[A-Z0-9]+>/g, '#channel')
+    // Derive emphasized hotkeys from LLM-ranked actions
+    const hotkeyMap = { reply: 'done', track: 'track', watch: 'track', done: 'done', snooze: 'snooze' }
+    let derivedHotkeys = ['done', 'track']
+    if (s.actions && s.actions.length >= 2) {
+      const first = hotkeyMap[s.actions[0]?.type] || 'done'
+      const second = hotkeyMap[s.actions[1]?.type] || 'track'
+      derivedHotkeys = [first, second !== first ? second : (first === 'done' ? 'track' : 'done')]
+    }
     items.push({
       id: s.id, kind: 'slack', score: s.score,
       label: cleanLabel,
       actionVerb: verbMap[s.context] || 'Slack',
       from, channelLabel: s.channelLabel || null,
       list: 'pulse',
-      emphasizedHotkeys: ['done', 'create task'],
+      emphasizedHotkeys: derivedHotkeys,
       slackThread: s.slackThread || null,
       slackRef: s.slackRef || null,
       suggestion: s.suggestion || null,
       draftReply: s.draftReply || null,
+      actions: s.actions || null,
     })
   }
 
@@ -208,15 +228,52 @@ function computeQueue(data) {
         claudeActionVerb = 'Claude Code'
       }
 
+      // --- slackWatch logic ---
+      let watchSublabel = undefined
+      let watchActionVerb = null
+      let watchData = null
+
+      if (t.slackWatch) {
+        const sw = t.slackWatch
+        const hasNewActivity = sw.lastOtherTs > (sw.lastMyReplyTs || 0)
+        const hoursSinceMyReply = sw.lastMyReplyTs
+          ? (Date.now() / 1000 - sw.lastMyReplyTs) / 3600
+          : Infinity
+        const nudgeFired = sw.lastMyReplyTs && hoursSinceMyReply >= (sw.checkHours || 24)
+
+        if (hasNewActivity) {
+          watchSublabel = `replied ${formatTimeAgo(sw.lastOtherTs)}`
+          watchActionVerb = 'Thread'
+          watchData = { ref: sw.ref, surfaceReason: 'activity', surfaceContext: sw.surfaceContext || null, delegateOnly: sw.delegateOnly }
+        } else if (nudgeFired) {
+          const hours = Math.floor(hoursSinceMyReply)
+          watchSublabel = `No reply in ${hours}h`
+          watchActionVerb = 'Nudge'
+          watchData = { ref: sw.ref, surfaceReason: 'nudge', surfaceContext: null, delegateOnly: sw.delegateOnly }
+        } else if (sw.delegateOnly) {
+          // Delegate-only with no trigger — skip entirely
+          continue
+        } else {
+          // Normal task with watch annotation
+          const waitHours = sw.lastMyReplyTs
+            ? Math.floor((Date.now() / 1000 - sw.lastMyReplyTs) / 3600)
+            : null
+          if (waitHours !== null) watchSublabel = `Waiting (${waitHours}h)`
+          watchData = { ref: sw.ref, surfaceReason: null, surfaceContext: null, delegateOnly: sw.delegateOnly }
+        }
+      }
+
       // All daily-goals items scored purely by position — priority order is king
       if (listName === 'daily-goals') {
         items.push({
           id: t.id, kind: 'task', score: 1000 + posBonus,
-          label: t.text, sublabel: claudeSublabel,
-          actionVerb: hasClaudeEvent ? claudeActionVerb : (t.isFireDrill ? 'Fire drill' : 'Do'),
+          label: t.text, sublabel: watchSublabel || claudeSublabel,
+          actionVerb: watchActionVerb || (hasClaudeEvent ? claudeActionVerb : (t.isFireDrill ? 'Fire drill' : 'Do')),
           list: listName, isFireDrill: t.isFireDrill || false,
           slackContext, env: t.env || null, claudeLinks,
           notes: t.notes || '',
+          hasConversation: getConversation(t.id).messages.length > 0,
+          slackWatch: watchData || null,
         })
       }
     }
@@ -443,6 +500,25 @@ router.post('/done', (req, res) => {
       return res.json({ success: true, action: 'dismissed', item: top.label, remaining: queue.length - 1 })
     }
 
+    // Watched task: "done" on a watch trigger resets the watch, doesn't complete the task
+    if (top.slackWatch?.surfaceReason) {
+      const result = findTask(data, top.id, { skipDone: true })
+      if (result && result.task.slackWatch) {
+        const sw = result.task.slackWatch
+        if (top.slackWatch.surfaceReason === 'activity') {
+          sw.lastOtherTs = null
+          sw.surfaceContext = null
+        }
+        if (top.slackWatch.surfaceReason === 'nudge') {
+          sw.lastMyReplyTs = Date.now() / 1000
+        }
+        // Delegate-only tasks go back to waiting; own-work tasks stay pending
+        if (sw.delegateOnly) result.task.status = 'in_progress'
+        saveData(data)
+        return res.json({ success: true, action: 'watch-reset', item: top.label, remaining: queue.length - 1 })
+      }
+    }
+
     // Task item — move to done
     const result = findTask(data, top.id, { skipDone: true })
     if (!result) return res.json({ success: false, reason: 'task not found' })
@@ -573,6 +649,44 @@ router.post('/promote', (req, res) => {
     }
 
     return res.status(400).json({ error: 'id or text required' })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/focus/watch — create a task with slackWatch from a Slack card
+router.post('/watch', (req, res) => {
+  try {
+    const { text, slackRef, checkHours = 24, delegateOnly = false } = req.body
+    if (!text || !slackRef) return res.status(400).json({ error: 'text and slackRef required' })
+
+    const data = readData()
+
+    // Dismiss the slack pulse item
+    dismissSlackItem(slackRef, text)
+    data.lists.pulse = (data.lists.pulse || []).filter(t => t.slackRef !== slackRef)
+
+    // Create task in daily-goals with slackWatch
+    const newTask = createTask(data, {
+      text,
+      priority: 1,
+      status: delegateOnly ? 'in_progress' : 'pending',
+      slackWatch: {
+        ref: slackRef,
+        checkHours,
+        lastMyReplyTs: null,
+        lastOtherTs: null,
+        delegateOnly,
+        surfaceContext: null,
+      },
+    })
+
+    if (!data.lists['daily-goals']) data.lists['daily-goals'] = []
+    data.lists['daily-goals'].unshift(newTask)
+    saveData(data)
+    pendingPrioritySort = true
+
+    res.json({ success: true, taskId: newTask.id })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

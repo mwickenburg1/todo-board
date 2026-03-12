@@ -60,6 +60,15 @@ class EventHub {
       if (result.matched > 0) {
         console.log(`[hub] Event routed: ${source}/${ref} → ${result.matched} task(s)`)
       }
+      // Notify scanner about thread activity (for tracked public threads)
+      if (source === 'slack_thread' && ref.includes('/')) {
+        const [channel, threadTs] = ref.split('/')
+        fetch(`${TODO_API}/api/thread-activity`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ channel, threadTs })
+        }).catch(() => {})
+      }
       return true
     } catch (err) {
       console.error(`[hub] Dispatch failed:`, err.message)
@@ -104,8 +113,23 @@ class EventHub {
             if (!refs[link.type]) refs[link.type] = new Set()
             refs[link.type].add(link.ref)
           }
+          // Include slackWatch refs for real-time thread monitoring
+          if (task.slackWatch?.ref) {
+            if (!refs.slack_thread) refs.slack_thread = new Set()
+            refs.slack_thread.add(task.slackWatch.ref)
+          }
         }
       }
+
+      // Merge scanner-tracked public threads into Socket Mode watch list
+      try {
+        const trackedRes = await fetch(`${TODO_API}/api/tracked-thread-refs`)
+        const trackedRefs = await trackedRes.json()
+        if (Array.isArray(trackedRefs) && trackedRefs.length > 0) {
+          if (!refs.slack_thread) refs.slack_thread = new Set()
+          for (const ref of trackedRefs) refs.slack_thread.add(ref)
+        }
+      } catch {}
 
       for (const plugin of this.plugins) {
         if (!plugin.updateWatchList) continue

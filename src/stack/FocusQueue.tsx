@@ -115,6 +115,146 @@ function Scratchpad({ taskId, initialNotes, onSave }: { taskId: number; initialN
 }
 
 
+interface ConvoMessage {
+  role: 'user' | 'assistant'
+  content: string
+  ts: number
+}
+
+function TaskConversation({ taskId, hasMessages }: { taskId: number; hasMessages: boolean }) {
+  const [expanded, setExpanded] = useState(hasMessages)
+  const [messages, setMessages] = useState<ConvoMessage[]>([])
+  const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [loaded, setLoaded] = useState(false)
+  const bottomRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  // Load conversation when expanded
+  useEffect(() => {
+    if (expanded && !loaded) {
+      fetch(`/api/todos/${taskId}/conversation`)
+        .then(r => r.json())
+        .then(data => { setMessages(data.messages || []); setLoaded(true) })
+        .catch(() => setLoaded(true))
+    }
+  }, [expanded, taskId, loaded])
+
+  // Reset when task changes
+  useEffect(() => {
+    setMessages([])
+    setLoaded(false)
+    setExpanded(hasMessages)
+  }, [taskId])
+
+  // Auto-scroll on new messages
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages.length])
+
+  // Auto-focus input when expanded
+  useEffect(() => {
+    if (expanded && loaded) inputRef.current?.focus()
+  }, [expanded, loaded])
+
+  const send = async () => {
+    const text = input.trim()
+    if (!text || loading) return
+    setInput('')
+    setLoading(true)
+    // Optimistic user message
+    setMessages(prev => [...prev, { role: 'user', content: text, ts: Date.now() }])
+    try {
+      const res = await fetch(`/api/todos/${taskId}/conversation`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text }),
+      })
+      const data = await res.json()
+      setMessages(data.messages || [])
+    } catch {
+      setMessages(prev => [...prev, { role: 'assistant', content: 'Failed to get response.', ts: Date.now() }])
+    }
+    setLoading(false)
+  }
+
+  const clearConvo = async () => {
+    await fetch(`/api/todos/${taskId}/conversation`, { method: 'DELETE' })
+    setMessages([])
+  }
+
+  return (
+    <div className="mt-4">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-2 text-[13px] text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+      >
+        <span className={`transition-transform ${expanded ? 'rotate-90' : ''}`}>&#x25B6;</span>
+        <span>Chat{messages.length > 0 ? ` (${messages.length})` : ''}</span>
+        {messages.length > 0 && (
+          <button
+            onClick={e => { e.stopPropagation(); clearConvo() }}
+            className="ml-2 text-[11px] text-gray-300 dark:text-gray-600 hover:text-red-400"
+          >clear</button>
+        )}
+      </button>
+
+      {expanded && (
+        <div className="mt-2 rounded-xl bg-gray-50/50 dark:bg-white/[0.02] border border-gray-100 dark:border-white/[0.04] overflow-hidden">
+          {/* Messages */}
+          {messages.length > 0 && (
+            <div className="max-h-[400px] overflow-y-auto px-4 py-3 space-y-3">
+              {messages.map((m, i) => (
+                <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[85%] rounded-lg px-3 py-2 text-[14px] leading-relaxed ${
+                    m.role === 'user'
+                      ? 'bg-blue-500/10 dark:bg-blue-500/15 text-gray-700 dark:text-gray-200'
+                      : 'bg-white dark:bg-white/[0.04] text-gray-600 dark:text-gray-300 border border-gray-100 dark:border-white/[0.06]'
+                  }`}>
+                    <p className="whitespace-pre-wrap">{m.content}</p>
+                  </div>
+                </div>
+              ))}
+              {loading && (
+                <div className="flex justify-start">
+                  <div className="bg-white dark:bg-white/[0.04] border border-gray-100 dark:border-white/[0.06] rounded-lg px-3 py-2 text-[14px] text-gray-400">
+                    <span className="animate-pulse">thinking...</span>
+                  </div>
+                </div>
+              )}
+              <div ref={bottomRef} />
+            </div>
+          )}
+
+          {/* Input */}
+          <div className="flex items-center gap-2 px-3 py-2 border-t border-gray-100 dark:border-white/[0.04]">
+            <input
+              ref={inputRef}
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => {
+                e.stopPropagation()
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
+              }}
+              onKeyUp={e => e.stopPropagation()}
+              placeholder="Think out loud..."
+              disabled={loading}
+              className="flex-1 bg-transparent text-[14px] text-gray-700 dark:text-gray-200 placeholder-gray-300 dark:placeholder-gray-600 outline-none"
+            />
+            <button
+              onClick={send}
+              disabled={loading || !input.trim()}
+              className="text-[12px] font-medium text-blue-500 dark:text-blue-400 hover:text-blue-600 disabled:text-gray-300 dark:disabled:text-gray-600 transition-colors px-2 py-1"
+            >
+              Send
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /* PRView and DeadlineView extracted to ./PRView.tsx and ./DeadlineView.tsx */
 
 interface FleetEnv {
@@ -148,9 +288,25 @@ interface FocusResponse {
     claudeLinks?: { label: string; ref: string; idx: number }[] | null
     priorityTasks?: { id: number; text: string; env: string | null; escalation: number; isFireDrill: boolean; deadline: string | null; status?: string }[]
     notes?: string
+    hasConversation?: boolean
     prs?: PR[]
     deadlineItems?: DeadlineItem[]
+    slackWatch?: {
+      ref: string
+      surfaceReason: 'activity' | 'nudge' | null
+      surfaceContext: { who: string; text: string }[] | null
+      delegateOnly: boolean
+    } | null
+    actions?: TriageAction[] | null
   }
+}
+
+interface TriageAction {
+  type: 'reply' | 'track' | 'watch' | 'done' | 'snooze'
+  draft?: string
+  taskText?: string
+  delegateOnly?: boolean
+  checkHours?: number
 }
 
 type HotkeyEmphasis = 'primary' | 'secondary' | 'default'
@@ -266,6 +422,8 @@ export function FocusQueue() {
   const [newItemOpen, setNewItemOpen] = useState(false)
   const [newItemFireDrill, setNewItemFireDrill] = useState(false)
   const [newItemPrefill, setNewItemPrefill] = useState('')
+  const [newItemSlackRef, setNewItemSlackRef] = useState<string | null>(null)
+  const [newItemActionHint, setNewItemActionHint] = useState<TriageAction | null>(null)
   const [rescheduleOpen, setRescheduleOpen] = useState(false)
   const [viewLoading, setViewLoading] = useState<string | null>(null)
   const lastJsonRef = useRef('')
@@ -344,7 +502,7 @@ export function FocusQueue() {
     }).catch(() => {})
   }, [fetchQueue])
 
-  // Cmd+N (new item), Cmd+J (reschedule), Cmd+Shift+C (create task from Slack)
+  // Cmd+N (new item), Cmd+J (reschedule), Cmd+Shift+C (track/create from Slack)
   // Cmd+Shift+F (fleet), Cmd+P (priorities), Cmd+Shift+G (PRs), Cmd+Shift+' (deadlines)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -353,6 +511,8 @@ export function FocusQueue() {
         setRescheduleOpen(false)
         setNewItemFireDrill(false)
         setNewItemPrefill('')
+        setNewItemSlackRef(null)
+        setNewItemActionHint(null)
         setNewItemOpen(prev => !prev)
       }
       if ((e.metaKey || e.ctrlKey) && e.key === 'j') {
@@ -382,9 +542,19 @@ export function FocusQueue() {
         if (currentTop?.kind !== 'slack') return
         setRescheduleOpen(false)
         setNewItemOpen(false)
-        const prefill = currentTop.label || ''
+        // Use LLM-ranked actions to pre-configure the create flow
+        const trackAction = currentTop.actions?.find(a => a.type === 'track' || a.type === 'watch')
+        const prefill = trackAction?.taskText || currentTop.label || ''
         setNewItemFireDrill(true)
         setNewItemPrefill(prefill)
+        // Auto-attach slackWatch when creating task from a Slack card
+        setNewItemSlackRef(currentTop.slackRef || null)
+        // If action has delegateOnly pre-set, pass it through via a data attribute
+        if (trackAction) {
+          setNewItemActionHint(trackAction)
+        } else {
+          setNewItemActionHint(null)
+        }
         setTimeout(() => setNewItemOpen(true), 10)
       }
     }
@@ -403,12 +573,27 @@ export function FocusQueue() {
     }).catch(() => {})
   }, [fetchQueue])
 
-  const handleCreate = useCallback((text: string, type?: 'fire-drill' | 'today' | 'backlog', snoozeMins?: number, pastedSlack?: SlackContext, deadline?: string) => {
+  const handleCreate = useCallback((text: string, type?: 'fire-drill' | 'today' | 'backlog', snoozeMins?: number, pastedSlack?: SlackContext, deadline?: string, delegateOnly?: boolean, checkHours?: number) => {
     const currentTop = dataRef.current?.top
     const isSlack = currentTop?.kind === 'slack'
     const slackRef = isSlack ? currentTop.slackRef : null
     const slackLabel = isSlack ? currentTop.label : null
     const originalId = currentTop?.id
+
+    // Watch flow: create via /api/focus/watch (handles dismiss + task creation + slackWatch)
+    if (delegateOnly !== undefined && slackRef) {
+      fetch('/api/focus/watch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, slackRef, delegateOnly, checkHours: checkHours || 24 }),
+      }).then(() => {
+        lastJsonRef.current = ''
+        setNewItemSlackRef(null)
+        setNewItemActionHint(null)
+        fetchQueue()
+      }).catch(() => {})
+      return
+    }
 
     // Step 1: Dismiss the slack pulse item first (so it doesn't reappear)
     const dismissPromise = isSlack && originalId
@@ -595,10 +780,12 @@ export function FocusQueue() {
         )}
         {newItemOpen && (
           <NewItemFlow
-            onClose={() => { setNewItemOpen(false); setNewItemFireDrill(false); setNewItemPrefill('') }}
+            onClose={() => { setNewItemOpen(false); setNewItemFireDrill(false); setNewItemPrefill(''); setNewItemSlackRef(null); setNewItemActionHint(null) }}
             onCreate={handleCreate}
             isCreateTask={newItemFireDrill}
             prefill={newItemPrefill}
+            slackRef={newItemSlackRef}
+            actionHint={newItemActionHint}
           />
         )}
         {rescheduleOpen && (
@@ -733,6 +920,11 @@ export function FocusQueue() {
           <Scratchpad key={top!.id} taskId={top!.id} initialNotes={top!.notes || ''} onSave={handleSaveNotes} />
         )}
 
+        {/* Task conversation — expandable LLM chat */}
+        {top!.kind === 'task' && (
+          <TaskConversation key={`convo-${top!.id}`} taskId={top!.id} hasMessages={!!top!.hasConversation} />
+        )}
+
         {/* LLM suggestion — actionable advice between title and Slack panel */}
         {top!.kind === 'slack' && top!.suggestion && (
           <p className="mt-4 text-[19px] text-gray-700 dark:text-gray-200 leading-relaxed">
@@ -750,7 +942,7 @@ export function FocusQueue() {
             { keys: '\u2318\u21e7D', label: 'done' },
             { keys: '\u2318\u21e7E', label: `snooze ${snoozeMins}m` },
             { keys: '\u2318J', label: 'reschedule' },
-            { keys: '\u2318\u21e7C', label: 'create task' },
+            { keys: '\u2318\u21e7C', label: 'track' },
           ]
           const rank = { primary: 0, secondary: 1, default: 2 }
           const sorted = [...allHotkeys].sort((a, b) =>
@@ -826,6 +1018,18 @@ export function FocusQueue() {
           </div>
         )}
 
+        {/* Watched thread inline preview */}
+        {top!.kind === 'task' && top!.slackWatch?.surfaceReason === 'activity' && top!.slackWatch.ref && (
+          <div className="mt-4">
+            <SlackThreadPreview
+              key={`watch-${top!.slackWatch.ref}`}
+              ref_={top!.slackWatch.ref}
+              label="Watched thread"
+              defaultExpanded
+            />
+          </div>
+        )}
+
         {/* Hotkey hints + env controls — only for non-slack cards (slack hotkeys are above) */}
         {top!.kind !== 'slack' && (() => {
           const em = top!.emphasizedHotkeys || (top!.kind === 'task' ? ['done'] : [])
@@ -885,10 +1089,12 @@ export function FocusQueue() {
       {/* Cmd+N new item overlay */}
       {newItemOpen && (
         <NewItemFlow
-          onClose={() => { setNewItemOpen(false); setNewItemFireDrill(false); setNewItemPrefill('') }}
+          onClose={() => { setNewItemOpen(false); setNewItemFireDrill(false); setNewItemPrefill(''); setNewItemSlackRef(null); setNewItemActionHint(null) }}
           onCreate={handleCreate}
           isCreateTask={newItemFireDrill}
           prefill={newItemPrefill}
+          slackRef={newItemSlackRef}
+          actionHint={newItemActionHint}
         />
       )}
 
