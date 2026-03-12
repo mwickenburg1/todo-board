@@ -246,16 +246,24 @@ app.post('/api/slack-reply/:channel/:threadTs', async (req, res) => {
     if (threadTs !== 'channel') {
       trackThread(channel, threadTs).catch(() => {})
     }
-    // Update slackWatch state on any task watching this thread
+    // Update slackWatches state on any task watching this thread
     try {
       const todoData = readData()
       let watchChanged = false
       const nowTs = String(Date.now() / 1000)
+      const ref = `${channel}/${threadTs}`
       for (const [, tasks] of Object.entries(todoData.lists)) {
         if (!tasks) continue
         for (const task of tasks) {
-          if (task.slackWatch?.ref === `${channel}/${threadTs}`) {
-            if (updateWatchFromContext(task, [{ who: 'me', ts: nowTs }])) watchChanged = true
+          // Support both legacy slackWatch and new slackWatches
+          if (task.slackWatch && !task.slackWatches) {
+            task.slackWatches = [task.slackWatch]
+            delete task.slackWatch
+          }
+          for (const sw of (task.slackWatches || [])) {
+            if (sw.ref === ref) {
+              if (updateWatchFromContext({ slackWatch: sw }, [{ who: 'me', ts: nowTs }])) watchChanged = true
+            }
           }
         }
       }

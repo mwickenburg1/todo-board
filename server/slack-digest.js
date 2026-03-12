@@ -7,7 +7,7 @@
 
 import { readFileSync, writeFileSync } from 'fs'
 import { resolve } from 'path'
-import { readData, saveData, createTask, getWatchedThreadRefs } from './store.js'
+import { readData, saveData, createTask, getWatchedThreadRefs, migrateWatches } from './store.js'
 import { SLACK_TOKEN, INITIAL_LOOKBACK_HOURS } from './slack-api.js'
 import { analyzeCrashes, analyzeIncidentChannel, clearAnalysisCache, callSonnet } from './slack-llm.js'
 import { triageSlackItem } from './slack-triage.js'
@@ -285,17 +285,18 @@ async function updateDigest() {
     for (const [listName, tasks] of Object.entries(data.lists)) {
       if (!tasks || listName === 'done') continue
       for (const task of tasks) {
-        if (!task.slackWatch?.ref) continue
-        if (!task.slackWatch.ref.includes('/')) {
-          dmWatchTasks.push({ task, listName })
+        migrateWatches(task)
+        for (const sw of (task.slackWatches || [])) {
+          if (!sw.ref || sw.ref.includes('/')) continue
+          dmWatchTasks.push({ task, sw, listName })
         }
       }
     }
 
     // Check DM relevance for each DM-watched channel with new messages
     const dmRelevanceCache = new Map() // channelId → Map<taskId, boolean>
-    for (const { task } of dmWatchTasks) {
-      const chId = task.slackWatch.ref
+    for (const { task, sw } of dmWatchTasks) {
+      const chId = sw.ref
       const dmMatch = unrepliedDMs.find(dm => dm.chId === chId)
       if (dmMatch && dmMatch.context?.length > 0) {
         const isRelevant = await checkDMRelevance(task.text, dmMatch.context)
@@ -329,22 +330,28 @@ async function updateDigest() {
       for (const [listName, tasks] of Object.entries(data.lists)) {
         if (!tasks || listName === 'done') continue
         for (const task of tasks) {
-          if (!task.slackWatch?.ref) continue
-          const ref = task.slackWatch.ref
-          const [chId, threadTs] = ref.split('/')
+          migrateWatches(task)
+          if (!task.slackWatches?.length) continue
 
-          // Check thread activity
-          const threadMatch = threadActivity.find(t => t.threadKey === `${chId}:${threadTs}`)
-          if (threadMatch) {
-            if (updateWatchFromContext(task, threadMatch.context || [])) watchChanged = true
-          }
+          for (const sw of task.slackWatches) {
+            const ref = sw.ref
+            const [chId, threadTs] = ref.split('/')
 
-          // Check DMs — only update watch state if LLM says messages are relevant
-          if (!threadTs) {
-            const dmMatch = unrepliedDMs.find(dm => dm.chId === chId)
-            if (dmMatch) {
-              const isRelevant = dmRelevanceCache.get(chId)?.get(task.id)
-              if (updateWatchFromContext(task, dmMatch.context || [], { checkRelevance: true, isRelevant })) watchChanged = true
+            // Check thread activity
+            if (threadTs) {
+              const threadMatch = threadActivity.find(t => t.threadKey === `${chId}:${threadTs}`)
+              if (threadMatch) {
+                if (updateWatchFromContext({ slackWatch: sw }, threadMatch.context || [])) watchChanged = true
+              }
+            }
+
+            // Check DMs — only update watch state if LLM says messages are relevant
+            if (!threadTs) {
+              const dmMatch = unrepliedDMs.find(dm => dm.chId === chId)
+              if (dmMatch) {
+                const isRelevant = dmRelevanceCache.get(chId)?.get(task.id)
+                if (updateWatchFromContext({ slackWatch: sw }, dmMatch.context || [], { checkRelevance: true, isRelevant })) watchChanged = true
+              }
             }
           }
         }

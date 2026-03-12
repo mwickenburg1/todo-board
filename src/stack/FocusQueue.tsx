@@ -316,19 +316,19 @@ type HotkeyEmphasis = 'primary' | 'secondary' | 'default'
 
 function HotkeyHint({ keys, label, emphasis = 'default' }: { keys: string; label: string; emphasis?: HotkeyEmphasis }) {
   const kbdClass = emphasis === 'primary'
-    ? 'px-2.5 py-1 rounded-md font-mono text-[14px] font-medium bg-emerald-100 dark:bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-200/80 dark:border-emerald-400/20 shadow-[0_1px_0_rgba(0,0,0,0.04)] dark:shadow-[0_1px_0_rgba(0,0,0,0.3)]'
+    ? 'px-3 py-1.5 rounded-md font-mono text-[15px] font-medium bg-emerald-500/20 dark:bg-emerald-500/20 text-emerald-500 dark:text-emerald-400 border border-emerald-400/30 dark:border-emerald-400/25 shadow-[0_1px_0_rgba(0,0,0,0.04)] dark:shadow-[0_1px_0_rgba(0,0,0,0.3)]'
     : emphasis === 'secondary'
-    ? 'px-2.5 py-1 rounded-md font-mono text-[14px] font-medium bg-amber-50 dark:bg-amber-500/10 text-amber-500 dark:text-amber-400 border border-amber-200/60 dark:border-amber-400/15 shadow-[0_1px_0_rgba(0,0,0,0.04)] dark:shadow-[0_1px_0_rgba(0,0,0,0.3)]'
-    : 'px-2.5 py-1 rounded-md font-mono text-[14px] font-medium bg-gray-100 dark:bg-white/[0.06] text-gray-400 dark:text-gray-500 border border-gray-200/80 dark:border-white/[0.08] shadow-[0_1px_0_rgba(0,0,0,0.04)] dark:shadow-[0_1px_0_rgba(0,0,0,0.3)]'
+    ? 'px-3 py-1.5 rounded-md font-mono text-[14px] font-medium bg-amber-50/60 dark:bg-amber-500/[0.06] text-amber-400/80 dark:text-amber-400/50 border border-amber-200/40 dark:border-amber-400/10'
+    : 'px-3 py-1.5 rounded-md font-mono text-[14px] font-medium bg-gray-100 dark:bg-white/[0.04] text-gray-400 dark:text-gray-600 border border-gray-200/60 dark:border-white/[0.05]'
 
   const labelClass = emphasis === 'primary'
-    ? 'text-emerald-500 dark:text-emerald-400'
+    ? 'text-emerald-500 dark:text-emerald-400 font-medium'
     : emphasis === 'secondary'
-    ? 'text-amber-400 dark:text-amber-400/70'
-    : 'text-gray-300 dark:text-gray-600'
+    ? 'text-amber-400/60 dark:text-amber-400/40'
+    : 'text-gray-400/70 dark:text-gray-600'
 
   return (
-    <span className={`inline-flex items-center gap-1.5 text-[15px] tracking-wide`}>
+    <span className={`inline-flex items-center gap-2 text-[16px] tracking-wide`}>
       <kbd className={kbdClass}>{keys}</kbd>
       <span className={labelClass}>{label}</span>
     </span>
@@ -573,8 +573,8 @@ export function FocusQueue() {
         }
         setTimeout(() => setNewItemOpen(true), 10)
       }
-      // Cmd+Shift+R — re-triage current slack item (fresh Slack fetch + LLM)
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'r' || e.key === 'R')) {
+      // Cmd+Shift+Y — re-triage current slack item (fresh Slack fetch + LLM)
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'y' || e.key === 'Y')) {
         e.preventDefault()
         const currentTop = dataRef.current?.top
         if (currentTop?.kind === 'slack' && currentTop.id) {
@@ -597,19 +597,19 @@ export function FocusQueue() {
     }).catch(() => {})
   }, [fetchQueue])
 
-  const handleCreate = useCallback((text: string, type?: 'fire-drill' | 'today' | 'backlog', snoozeMins?: number, pastedSlack?: SlackContext, deadline?: string, delegateOnly?: boolean, checkHours?: number) => {
+  const handleCreate = useCallback((text: string, type?: 'fire-drill' | 'today' | 'backlog', snoozeMins?: number, pastedSlack?: SlackContext, deadline?: string, delegateOnly?: boolean, checkHours?: number, existingTaskId?: number) => {
     const currentTop = dataRef.current?.top
     const isSlack = currentTop?.kind === 'slack'
     const slackRef = isSlack ? currentTop.slackRef : null
     const slackLabel = isSlack ? currentTop.label : null
     const originalId = currentTop?.id
 
-    // Watch flow: create via /api/focus/watch (handles dismiss + task creation + slackWatch)
+    // Watch flow: create or attach via /api/focus/watch (handles dismiss + slackWatches)
     if (delegateOnly !== undefined && slackRef) {
       fetch('/api/focus/watch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, slackRef, delegateOnly, checkHours: checkHours || 24 }),
+        body: JSON.stringify({ text, slackRef, delegateOnly, checkHours: checkHours || 24, existingTaskId }),
       }).then(() => {
         lastJsonRef.current = ''
         setNewItemSlackRef(null)
@@ -949,10 +949,10 @@ export function FocusQueue() {
           <TaskConversation key={`convo-${top!.id}`} taskId={top!.id} hasMessages={!!top!.hasConversation} />
         )}
 
-        {/* LLM suggestion — actionable advice between title and Slack panel */}
-        {top!.kind === 'slack' && (top!.suggestion || retriaging) && (
+        {/* LLM suggestion — above Slack panel unless first action is track */}
+        {top!.kind === 'slack' && (top!.suggestion || retriaging) && top!.actions?.[0]?.type !== 'track' && top!.actions?.[0]?.type !== 'watch' && (
           <div className="mt-4 flex items-start gap-3">
-            <p className={`text-[19px] text-gray-700 dark:text-gray-200 leading-relaxed flex-1 ${retriaging ? 'opacity-50' : ''}`}>
+            <p className={`text-[21px] text-gray-700 dark:text-gray-200 leading-relaxed flex-1 ${retriaging ? 'opacity-50' : ''}`}>
               {retriaging ? 'Re-analyzing...' : top!.suggestion}
             </p>
           </div>
@@ -983,6 +983,15 @@ export function FocusQueue() {
           )
         })()}
 
+        {/* LLM suggestion — below Slack panel when first action is track */}
+        {top!.kind === 'slack' && (top!.suggestion || retriaging) && (top!.actions?.[0]?.type === 'track' || top!.actions?.[0]?.type === 'watch') && (
+          <div className="mt-4 flex items-start gap-3">
+            <p className={`text-[21px] text-gray-700 dark:text-gray-200 leading-relaxed flex-1 ${retriaging ? 'opacity-50' : ''}`}>
+              {retriaging ? 'Re-analyzing...' : top!.suggestion}
+            </p>
+          </div>
+        )}
+
         {/* Hotkey hints — below Slack context for slack cards */}
         {top!.kind === 'slack' && (() => {
           const em = top!.emphasizedHotkeys || []
@@ -994,7 +1003,7 @@ export function FocusQueue() {
             { keys: '\u2318\u21e7E', label: `snooze ${snoozeMins}m` },
             { keys: '\u2318J', label: 'reschedule' },
             { keys: '\u2318\u21e7C', label: 'track' },
-            { keys: '\u2318\u21e7R', label: 'refresh' },
+            { keys: '\u2318\u21e7Y', label: 'refresh' },
           ]
           const rank = { primary: 0, secondary: 1, default: 2 }
           const sorted = [...allHotkeys].sort((a, b) =>

@@ -29,7 +29,11 @@ function buildSystemPrompt(task) {
   const parts = [`You are a concise thinking partner helping me work through a task.`]
   parts.push(`\nTask: "${task.text}"`)
   if (task.notes) parts.push(`\nNotes:\n${task.notes}`)
-  if (task.slackWatch) parts.push(`\nThis task is watching a Slack thread (${task.slackWatch.delegateOnly ? 'delegated' : 'own work'}).`)
+  const watches = task.slackWatches || (task.slackWatch ? [task.slackWatch] : [])
+  if (watches.length > 0) {
+    const modes = watches.map(sw => sw.delegateOnly ? 'delegated' : 'own work')
+    parts.push(`\nThis task is watching ${watches.length} Slack thread(s) (${modes.join(', ')}).`)
+  }
   if (task.deadline) parts.push(`\nDeadline: ${task.deadline}`)
   if (task.env) parts.push(`\nEnvironment: ${task.env}`)
   parts.push(`\nBe brief and direct. Ask clarifying questions when needed. Help me think, don't lecture.`)

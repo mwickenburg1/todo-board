@@ -15,7 +15,7 @@
  */
 
 import { Router } from 'express'
-import { readData, saveData, findTask, createTask } from './store.js'
+import { readData, saveData, findTask, createTask, migrateWatches } from './store.js'
 import { getConversation } from './conversations.js'
 import { acknowledgeDigest, dismissSlackItem } from './slack-digest.js'
 import { markRoutineChecked, isRoutineCheckedToday } from './routine-state.js'
@@ -229,39 +229,60 @@ function computeQueue(data) {
         claudeActionVerb = 'Claude Code'
       }
 
-      // --- slackWatch logic ---
+      // --- slackWatches logic (pick best watch to surface) ---
+      migrateWatches(t)
       let watchSublabel = undefined
       let watchActionVerb = null
       let watchData = null
+      let allDelegateOnly = false
 
-      if (t.slackWatch) {
-        const sw = t.slackWatch
-        const hasNewActivity = sw.lastOtherTs > (sw.lastMyReplyTs || 0)
-        const hoursSinceMyReply = sw.lastMyReplyTs
-          ? (Date.now() / 1000 - sw.lastMyReplyTs) / 3600
-          : Infinity
-        const nudgeFired = sw.lastMyReplyTs && hoursSinceMyReply >= (sw.checkHours || 24)
+      if (t.slackWatches?.length > 0) {
+        // Evaluate each watch, pick the most interesting one
+        let bestWatch = null
+        let bestPriority = -1  // activity=3, nudge=2, waiting=1, delegate-quiet=0
+        allDelegateOnly = t.slackWatches.every(sw => sw.delegateOnly)
 
-        if (hasNewActivity) {
-          watchSublabel = `replied ${formatTimeAgo(sw.lastOtherTs)}`
-          watchActionVerb = 'Thread'
-          watchData = { ref: sw.ref, surfaceReason: 'activity', surfaceContext: sw.surfaceContext || null, delegateOnly: sw.delegateOnly }
-        } else if (nudgeFired) {
-          const hours = Math.floor(hoursSinceMyReply)
-          watchSublabel = `No reply in ${hours}h`
-          watchActionVerb = 'Nudge'
-          watchData = { ref: sw.ref, surfaceReason: 'nudge', surfaceContext: null, delegateOnly: sw.delegateOnly }
-        } else if (sw.delegateOnly) {
-          // Delegate-only with no trigger — skip entirely
-          continue
-        } else {
-          // Normal task with watch annotation
-          const waitHours = sw.lastMyReplyTs
-            ? Math.floor((Date.now() / 1000 - sw.lastMyReplyTs) / 3600)
-            : null
-          if (waitHours !== null) watchSublabel = `Waiting (${waitHours}h)`
-          watchData = { ref: sw.ref, surfaceReason: null, surfaceContext: null, delegateOnly: sw.delegateOnly }
+        for (const sw of t.slackWatches) {
+          const hasNewActivity = sw.lastOtherTs > (sw.lastMyReplyTs || 0)
+          const hoursSinceMyReply = sw.lastMyReplyTs
+            ? (Date.now() / 1000 - sw.lastMyReplyTs) / 3600
+            : Infinity
+          const nudgeFired = sw.lastMyReplyTs && hoursSinceMyReply >= (sw.checkHours || 24)
+
+          let priority = 0
+          let sublabel, verb, reason
+          if (hasNewActivity) {
+            priority = 3
+            sublabel = `replied ${formatTimeAgo(sw.lastOtherTs)}`
+            verb = 'Thread'
+            reason = 'activity'
+          } else if (nudgeFired) {
+            priority = 2
+            const hours = Math.floor(hoursSinceMyReply)
+            sublabel = `No reply in ${hours}h`
+            verb = 'Nudge'
+            reason = 'nudge'
+          } else if (!sw.delegateOnly) {
+            priority = 1
+            const waitHours = sw.lastMyReplyTs
+              ? Math.floor((Date.now() / 1000 - sw.lastMyReplyTs) / 3600)
+              : null
+            if (waitHours !== null) sublabel = `Waiting (${waitHours}h)`
+            reason = null
+          }
+          // else delegate-only with no trigger → priority stays 0
+
+          if (priority > bestPriority) {
+            bestPriority = priority
+            bestWatch = sw
+            watchSublabel = sublabel
+            watchActionVerb = verb
+            watchData = { ref: sw.ref, surfaceReason: reason || null, surfaceContext: sw.surfaceContext || null, delegateOnly: sw.delegateOnly }
+          }
         }
+
+        // If all watches are delegate-only and none triggered, skip task
+        if (allDelegateOnly && bestPriority === 0) continue
       }
 
       // All daily-goals items scored purely by position — priority order is king
@@ -504,19 +525,21 @@ router.post('/done', (req, res) => {
     // Watched task: "done" on a watch trigger resets the watch, doesn't complete the task
     if (top.slackWatch?.surfaceReason) {
       const result = findTask(data, top.id, { skipDone: true })
-      if (result && result.task.slackWatch) {
-        const sw = result.task.slackWatch
-        if (top.slackWatch.surfaceReason === 'activity') {
-          sw.lastOtherTs = null
-          sw.surfaceContext = null
+      if (result) {
+        migrateWatches(result.task)
+        const sw = (result.task.slackWatches || []).find(w => w.ref === top.slackWatch.ref)
+        if (sw) {
+          if (top.slackWatch.surfaceReason === 'activity') {
+            sw.lastOtherTs = null
+            sw.surfaceContext = null
+          }
+          if (top.slackWatch.surfaceReason === 'nudge') {
+            sw.lastMyReplyTs = Date.now() / 1000
+          }
+          if (sw.delegateOnly) result.task.status = 'in_progress'
+          saveData(data)
+          return res.json({ success: true, action: 'watch-reset', item: top.label, remaining: queue.length - 1 })
         }
-        if (top.slackWatch.surfaceReason === 'nudge') {
-          sw.lastMyReplyTs = Date.now() / 1000
-        }
-        // Delegate-only tasks go back to waiting; own-work tasks stay pending
-        if (sw.delegateOnly) result.task.status = 'in_progress'
-        saveData(data)
-        return res.json({ success: true, action: 'watch-reset', item: top.label, remaining: queue.length - 1 })
       }
     }
 
@@ -655,31 +678,49 @@ router.post('/promote', (req, res) => {
   }
 })
 
-// POST /api/focus/watch — create a task with slackWatch from a Slack card
+// POST /api/focus/watch — create a task with slackWatches from a Slack card
 router.post('/watch', (req, res) => {
   try {
-    const { text, slackRef, checkHours = 24, delegateOnly = false } = req.body
-    if (!text || !slackRef) return res.status(400).json({ error: 'text and slackRef required' })
+    const { text, slackRef, checkHours = 24, delegateOnly = false, existingTaskId } = req.body
+    if (!slackRef) return res.status(400).json({ error: 'slackRef required' })
 
     const data = readData()
 
     // Dismiss the slack pulse item
-    dismissSlackItem(slackRef, text)
+    dismissSlackItem(slackRef, text || '')
     data.lists.pulse = (data.lists.pulse || []).filter(t => t.slackRef !== slackRef)
 
-    // Create task in daily-goals with slackWatch
+    const watchEntry = {
+      ref: slackRef,
+      checkHours,
+      lastMyReplyTs: null,
+      lastOtherTs: null,
+      delegateOnly,
+      surfaceContext: null,
+    }
+
+    if (existingTaskId) {
+      // Attach watch to existing task
+      const result = findTask(data, existingTaskId, { skipDone: true })
+      if (!result) return res.status(404).json({ error: 'task not found' })
+      migrateWatches(result.task)
+      if (!result.task.slackWatches) result.task.slackWatches = []
+      // Don't duplicate refs
+      if (!result.task.slackWatches.some(w => w.ref === slackRef)) {
+        result.task.slackWatches.push(watchEntry)
+      }
+      saveData(data)
+      pendingPrioritySort = true
+      return res.json({ success: true, taskId: result.task.id, attached: true })
+    }
+
+    // Create new task in daily-goals with slackWatches
+    if (!text) return res.status(400).json({ error: 'text required for new task' })
     const newTask = createTask(data, {
       text,
       priority: 1,
       status: delegateOnly ? 'in_progress' : 'pending',
-      slackWatch: {
-        ref: slackRef,
-        checkHours,
-        lastMyReplyTs: null,
-        lastOtherTs: null,
-        delegateOnly,
-        surfaceContext: null,
-      },
+      slackWatches: [watchEntry],
     })
 
     if (!data.lists['daily-goals']) data.lists['daily-goals'] = []
@@ -714,6 +755,36 @@ router.get('/searchable', (req, res) => {
     }
 
     res.json({ items, routines: ROUTINE_ITEMS })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/focus/task-search?q=... — fuzzy search tasks for linking
+router.get('/task-search', (req, res) => {
+  try {
+    const q = (req.query.q || '').toLowerCase().trim()
+    if (!q || q.length < 2) return res.json([])
+
+    const data = readData()
+    const results = []
+    const skipLists = new Set(['done', 'pulse'])
+
+    for (const [listName, tasks] of Object.entries(data.lists)) {
+      if (!tasks || skipLists.has(listName)) continue
+      for (const t of tasks) {
+        if (!t.id || !t.text) continue
+        const text = t.text.toLowerCase()
+        if (text.includes(q)) {
+          results.push({ id: t.id, text: t.text, list: listName })
+        }
+      }
+    }
+
+    // Sort: daily-goals first, then focus, then rest. Max 10 results.
+    const listOrder = { 'daily-goals': 0, focus: 1, 'right-now': 2 }
+    results.sort((a, b) => (listOrder[a.list] ?? 5) - (listOrder[b.list] ?? 5))
+    res.json(results.slice(0, 10))
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

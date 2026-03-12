@@ -113,10 +113,15 @@ class EventHub {
             if (!refs[link.type]) refs[link.type] = new Set()
             refs[link.type].add(link.ref)
           }
-          // Include slackWatch refs for real-time thread monitoring
-          if (task.slackWatch?.ref) {
-            if (!refs.slack_thread) refs.slack_thread = new Set()
-            refs.slack_thread.add(task.slackWatch.ref)
+          // Include slackWatches refs for real-time thread monitoring
+          if (task.slackWatch && !task.slackWatches) {
+            task.slackWatches = [task.slackWatch]
+          }
+          for (const sw of (task.slackWatches || [])) {
+            if (sw.ref) {
+              if (!refs.slack_thread) refs.slack_thread = new Set()
+              refs.slack_thread.add(sw.ref)
+            }
           }
         }
       }

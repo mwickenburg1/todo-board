@@ -283,8 +283,26 @@ router.patch('/:id', (req, res) => {
       else task.notes = req.body.notes
     }
     if (req.body.slackWatch !== undefined) {
-      if (req.body.slackWatch === null) delete task.slackWatch
-      else task.slackWatch = { ...(task.slackWatch || {}), ...req.body.slackWatch }
+      // Legacy compat: convert to slackWatches array
+      if (req.body.slackWatch === null) {
+        delete task.slackWatch
+        delete task.slackWatches
+      } else {
+        if (task.slackWatch && !task.slackWatches) {
+          task.slackWatches = [task.slackWatch]
+          delete task.slackWatch
+        }
+        if (!task.slackWatches) task.slackWatches = []
+        if (task.slackWatches.length > 0) {
+          Object.assign(task.slackWatches[0], req.body.slackWatch)
+        } else {
+          task.slackWatches.push(req.body.slackWatch)
+        }
+      }
+    }
+    if (req.body.slackWatches !== undefined) {
+      if (req.body.slackWatches === null) delete task.slackWatches
+      else task.slackWatches = req.body.slackWatches
     }
     if (escalation !== undefined) {
       // Only one item per escalation level — clear others first

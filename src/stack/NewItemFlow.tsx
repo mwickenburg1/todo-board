@@ -23,7 +23,7 @@ interface ActionHint {
 
 interface NewItemFlowProps {
   onClose: () => void
-  onCreate: (text: string, type?: ItemType, snoozeMins?: number, slackContext?: SlackContext, deadline?: string, delegateOnly?: boolean, checkHours?: number) => void
+  onCreate: (text: string, type?: ItemType, snoozeMins?: number, slackContext?: SlackContext, deadline?: string, delegateOnly?: boolean, checkHours?: number, existingTaskId?: number) => void
   isCreateTask?: boolean
   prefill?: string
   slackRef?: string | null
@@ -47,18 +47,28 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
   const [snoozeMins, setSnoozeMins] = useState(5)
   const [delegateOnly, setDelegateOnly] = useState(actionHint?.delegateOnly ?? false)
   const [checkHours, setCheckHours] = useState(actionHint?.checkHours ?? 24)
-  // If actionHint provided with a taskText, skip text input and go straight to type picker
+  // If actionHint provided with a taskText, skip text input — UNLESS it's a watch (show combobox)
   const [focusArea, setFocusArea] = useState<'text' | 'type' | 'mode' | 'nudge' | 'snooze' | 'deadline'>(
-    actionHint?.taskText ? 'type' : 'text'
+    actionHint?.taskText && !(isCreateTask && !!slackRef) ? 'type' : 'text'
   )
   const isWatch = isCreateTask && !!slackRef
   const [slackContext, setSlackContext] = useState<SlackContext | null>(null)
   const [slackLoading, setSlackLoading] = useState(false)
+  const fmtDeadline = (iso: string | undefined) => {
+    if (!iso) return null
+    const d = new Date(iso.includes('T') ? iso : iso + 'T17:00:00')
+    if (isNaN(d.getTime())) return iso
+    return d.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
+  }
   const [deadlineText, setDeadlineText] = useState(actionHint?.deadline || '')
-  const [deadlineIso, setDeadlineIso] = useState<string | null>(actionHint?.deadline || null)
-  const [deadlinePreview, setDeadlinePreview] = useState<string | null>(actionHint?.deadline || null)
+  const [deadlineIso, setDeadlineIso] = useState<string | null>(actionHint?.deadline ? (actionHint.deadline.includes('T') ? actionHint.deadline : actionHint.deadline + 'T17:00:00') : null)
+  const [deadlinePreview, setDeadlinePreview] = useState<string | null>(fmtDeadline(actionHint?.deadline))
   const [deadlineParsing, setDeadlineParsing] = useState(false)
   const [deadlineError, setDeadlineError] = useState<string | null>(null)
+  // Existing task search (optional — link watch to existing task)
+  const [searchResults, setSearchResults] = useState<{ id: number; text: string; list: string }[]>([])
+  const [selectedTask, setSelectedTask] = useState<{ id: number; text: string } | null>(null)
+  const [searchSelectedIdx, setSearchSelectedIdx] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const deadlineRef = useRef<HTMLInputElement>(null)
   const backdropRef = useRef<HTMLDivElement>(null)
@@ -74,9 +84,23 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
     if (focusArea === 'text') inputRef.current?.focus()
   }, [focusArea])
 
+  // Debounced task search — triggers from text input when in watch mode
+  useEffect(() => {
+    if (!isWatch || selectedTask) { setSearchResults([]); return }
+    const q = text.trim()
+    if (!q || q.length < 2) { setSearchResults([]); return }
+    const timer = setTimeout(() => {
+      fetch(`/api/focus/task-search?q=${encodeURIComponent(q)}`)
+        .then(r => r.json())
+        .then(results => { setSearchResults(results); setSearchSelectedIdx(0) })
+        .catch(() => setSearchResults([]))
+    }, 200)
+    return () => clearTimeout(timer)
+  }, [text, isWatch, selectedTask])
+
   const submit = async () => {
     const trimmed = text.trim()
-    if (!trimmed) return
+    if (!trimmed && !selectedTask) return
     // If there's unparsed deadline text, parse it first
     let finalDeadline = deadlineIso
     if (!finalDeadline && deadlineText.trim()) {
@@ -91,7 +115,7 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
       } catch { /* proceed without deadline */ }
     }
     const snoose = selectedType === 'fire-drill' ? snoozeMins : undefined
-    onCreate(trimmed, selectedType, snoose, slackContext || undefined, finalDeadline || undefined, isWatch ? delegateOnly : undefined, isWatch ? checkHours : undefined)
+    onCreate(trimmed, selectedType, snoose, slackContext || undefined, finalDeadline || undefined, isWatch ? delegateOnly : undefined, isWatch ? checkHours : undefined, selectedTask?.id)
     onClose()
   }
 
@@ -150,10 +174,33 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
       submit()
       return
     }
+    // When search results are showing, ArrowDown/Up navigate them
+    if (isWatch && searchResults.length > 0 && !selectedTask) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSearchSelectedIdx(prev => Math.min(searchResults.length - 1, prev + 1))
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSearchSelectedIdx(prev => Math.max(0, prev - 1))
+        return
+      }
+      // Tab picks the highlighted result
+      if (e.key === 'Tab' && searchResults.length > 0) {
+        e.preventDefault()
+        const picked = searchResults[searchSelectedIdx]
+        if (picked) {
+          setSelectedTask({ id: picked.id, text: picked.text })
+          setSearchResults([])
+        }
+        return
+      }
+    }
     if (e.key === 'Enter' || e.key === 'ArrowDown') {
       e.preventDefault()
       const trimmed = text.trim()
-      if (!trimmed) return
+      if (!trimmed && !selectedTask) return
       // Check if it's a Slack URL — extract context first
       if (SLACK_URL_RE.test(trimmed) && !slackContext) {
         extractSlack(trimmed)
@@ -306,25 +353,39 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
         {/* Input */}
         <div className="flex items-center gap-3 px-6 py-4">
           <span className={`text-[11px] font-semibold tracking-[0.12em] uppercase shrink-0 ${
-            isWatch
-              ? 'text-purple-500 dark:text-purple-400'
-              : isCreateTask
-                ? 'text-amber-500 dark:text-amber-400'
-                : 'text-gray-400 dark:text-gray-500'
+            selectedTask
+              ? 'text-green-500 dark:text-green-400'
+              : isWatch
+                ? 'text-purple-500 dark:text-purple-400'
+                : isCreateTask
+                  ? 'text-amber-500 dark:text-amber-400'
+                  : 'text-gray-400 dark:text-gray-500'
           }`}>
-            {isWatch ? 'Watch thread' : isCreateTask ? 'Create task' : 'New item'}
+            {selectedTask ? 'Linked' : isWatch ? 'Watch thread' : isCreateTask ? 'Create task' : 'New item'}
           </span>
-          <input
-            ref={inputRef}
-            value={text}
-            onChange={e => setText(e.target.value)}
-            onKeyDown={handleInputKeyDown}
-            placeholder="What needs doing?"
-            className={`flex-1 bg-transparent text-[15px] text-gray-800 dark:text-gray-100 outline-none placeholder-gray-400 dark:placeholder-gray-600 ${
-              focusArea !== 'text' ? 'opacity-50' : ''
-            }`}
-            autoFocus
-          />
+          {selectedTask ? (
+            <div className="flex items-center gap-2 flex-1 min-w-0">
+              <span className="text-[15px] text-green-600 dark:text-green-400 truncate">{selectedTask.text}</span>
+              <button
+                onClick={() => { setSelectedTask(null); setFocusArea('text'); setTimeout(() => inputRef.current?.focus(), 0) }}
+                className="text-[11px] text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 cursor-pointer px-1 shrink-0"
+              >
+                &times;
+              </button>
+            </div>
+          ) : (
+            <input
+              ref={inputRef}
+              value={text}
+              onChange={e => setText(e.target.value)}
+              onKeyDown={handleInputKeyDown}
+              placeholder="What needs doing?"
+              className={`flex-1 bg-transparent text-[15px] text-gray-800 dark:text-gray-100 outline-none placeholder-gray-400 dark:placeholder-gray-600 ${
+                focusArea !== 'text' ? 'opacity-50' : ''
+              }`}
+              autoFocus
+            />
+          )}
           {slackLoading && (
             <span className="w-4 h-4 border-2 border-purple-400/40 border-t-purple-500 rounded-full animate-spin shrink-0" />
           )}
@@ -332,6 +393,33 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
             esc
           </kbd>
         </div>
+
+        {/* Inline search results dropdown — appears below input when watch mode + typing */}
+        {isWatch && focusArea === 'text' && searchResults.length > 0 && !selectedTask && (
+          <div className="border-t border-gray-100 dark:border-white/[0.06] max-h-[200px] overflow-y-auto">
+            {searchResults.map((r, i) => (
+              <button
+                key={r.id}
+                onMouseDown={e => {
+                  e.preventDefault() // prevent input blur
+                  setSelectedTask({ id: r.id, text: r.text })
+                  setSearchResults([])
+                }}
+                className={`w-full text-left px-6 py-2 text-[13px] cursor-pointer transition-colors flex items-center gap-3 ${
+                  i === searchSelectedIdx
+                    ? 'bg-blue-50 dark:bg-blue-500/15 text-blue-700 dark:text-blue-300'
+                    : 'text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/[0.04]'
+                }`}
+              >
+                <span className="truncate flex-1">{r.text}</span>
+                <span className="text-[10px] text-gray-400 dark:text-gray-500 shrink-0">{r.list}</span>
+                {i === searchSelectedIdx && (
+                  <kbd className="px-1 py-0.5 rounded text-[9px] font-mono bg-gray-100 dark:bg-white/[0.06] text-gray-400 dark:text-gray-500 border border-gray-200/60 dark:border-white/[0.08] shrink-0">tab</kbd>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Type picker — horizontal, Left/Right to navigate */}
         {focusArea !== 'text' && (
@@ -529,6 +617,7 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
           </div>
         )}
 
+
         {/* Submit hint */}
         {focusArea !== 'text' && (
           <div className="border-t border-gray-100 dark:border-white/[0.06] px-6 py-2.5 flex items-center justify-end">
@@ -538,7 +627,7 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
                   ? 'bg-red-50 dark:bg-red-500/10 text-red-400 dark:text-red-400/60 border-red-200/60 dark:border-red-400/15'
                   : 'bg-blue-50 dark:bg-blue-500/10 text-blue-400 dark:text-blue-400/60 border-blue-200/60 dark:border-blue-400/15'
               }`}>⌘↵</kbd>
-              <span>{isWatch ? 'watch' : isCreateTask ? 'create task' : 'create item'}</span>
+              <span>{selectedTask ? 'link to task' : isWatch ? 'watch' : isCreateTask ? 'create task' : 'create item'}</span>
             </span>
           </div>
         )}

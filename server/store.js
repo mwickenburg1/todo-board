@@ -99,13 +99,28 @@ export function createEmptySlot(focusSlot) {
   }
 }
 
+/**
+ * Migrate legacy slackWatch (single object) → slackWatches (array).
+ * Called on any task before reading watches. Mutates in place, returns task.
+ */
+export function migrateWatches(task) {
+  if (task.slackWatch && !task.slackWatches) {
+    task.slackWatches = [task.slackWatch]
+    delete task.slackWatch
+  }
+  return task
+}
+
 /** Get all watched thread refs from non-done tasks. Returns Map<ref, taskId>. */
 export function getWatchedThreadRefs(data) {
   const map = new Map()
   for (const [listName, tasks] of Object.entries(data.lists)) {
     if (!tasks || listName === 'done') continue
     for (const t of tasks) {
-      if (t.slackWatch?.ref) map.set(t.slackWatch.ref, t.id)
+      migrateWatches(t)
+      for (const sw of (t.slackWatches || [])) {
+        if (sw.ref) map.set(sw.ref, t.id)
+      }
     }
   }
   return map

@@ -59,21 +59,23 @@ export function buildTriagePrompt(source, { person, channel, messages }) {
     : source === 'mention' ? `@mention in #${channel}` :
     `thread in #${channel}`
 
-  return `I am Matthias (shown as "me" or "mwickenburg" in the transcript). Any message addressed to @Matthias is addressed to ME.
+  return `You are triaging Slack messages on behalf of Matthias. In the transcript below, "me" = Matthias. All other names are other people. Your job is to advise MATTHIAS on what HE should do next.
 
 ${sourceLabel}:
 
 ${transcript}
 
+Remember: "me" in the transcript is Matthias. You are advising HIM. Any action/draft must be from Matthias's perspective.
+
 Respond in this EXACT format (no markdown, no extra lines):
-You are triaging Slack messages for a task management system. Your job is to decide:
+Decide:
 1. Do I need to REPLY to this conversation?
 2. Do I need to CREATE A TASK to track a commitment or follow-up?
 3. Or can I DISMISS this as informational?
 
 URGENCY: <ACTION_NEEDED or FYI>
 SUMMARY: <EXACTLY 2-4 words, NO MORE. Dashboard label, not a sentence. Examples: "MaintainX Slack access", "Deploy hotfix", "Account fix">
-ACTION: <what I should do, 1-2 sentences — or "No action needed — <reason>">
+ACTION: <"Track — <what>", "Reply — <what>", "Watch — <what>", or "No action needed — <reason>". 9 words max after the dash.>
 DRAFT: <a ready-to-send Slack reply as Matthias, or "none">
 KEY_MESSAGES: <JSON array of 1-3 message indices (0-based) that are the key asks or decisions — the messages I MUST read>
 
@@ -89,7 +91,8 @@ Other distinctions:
 - If the @mention is asking someone ELSE to do something (even if I'm cc'd) → FYI.
 - If someone already handled it ("done", "on it", "deployed") → FYI.
 - Only consider messages AFTER my last reply — everything before is handled.
-- Do NOT suggest "reply" if I already replied and nobody asked a follow-up question.
+- CRITICAL: If MY message is the LAST message in the transcript, I already replied. Do NOT suggest "reply" — the ball is in their court. Use "watch" or "done" instead.
+- Do NOT suggest "reply" if I already replied and nobody asked a follow-up question AFTER my reply.
 - If they said they'll handle it ("noted", "will do", "on it"), ball is in THEIR court → FYI.
 - In group DMs: if others are talking to EACH OTHER (not me) → FYI.
 - If I haven't said anything and nobody addresses me directly → lean FYI.
@@ -115,7 +118,7 @@ Rules for ACTIONS:
 - "reply" action MUST include the same draft text as DRAFT.
 - "track"/"watch" taskText should be ultra-concise (2-4 words max), not the full summary. Examples: "MaintainX Slack access", "Deploy hotfix", "Review PR".
 - For delegate scenarios, prefer "track" with delegateOnly:true over "watch".
-- "deadline" is optional — only include if the conversation implies a specific timeframe (e.g. "by Friday", "tomorrow", "end of week"). Use YYYY-MM-DDTHH:mm format (ET). IMPORTANT: Resolve relative dates ("tomorrow", "Friday") relative to when the messages were SENT, not right now.${lastMsgStr ? ` Last message was sent: ${lastMsgStr}.` : ''} Current time: ${nowStr}.
+- "deadline" is optional — only include if the conversation implies a specific timeframe. Use YYYY-MM-DDTHH:mm format (ET). IMPORTANT: Resolve relative dates ("tomorrow", "Friday") relative to when the messages were SENT, not right now.${lastMsgStr ? ` Last message was sent: ${lastMsgStr}.` : ''} Current time: ${nowStr}. Time hints: "tomorrow" / "on Friday" = EOD (17:00). "by tomorrow" / "by Friday" = start of day (09:00). "end of week" = Fri 17:00.
 - Output valid JSON on a single line after "ACTIONS: ".
 
 Rules for KEY_MESSAGES:
