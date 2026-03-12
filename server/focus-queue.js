@@ -322,6 +322,8 @@ function computeQueue(data) {
       }))
     prioritySortItem.priorityTasks = dailyGoals
     prioritySortItem.label = 'Set priorities'
+    // When hotkey-triggered, boost score so it rises above Slack items
+    if (pendingPrioritySort) prioritySortItem.score = 15001
   }
 
   // --- Pending priority sort: injected after creating a new item ---
