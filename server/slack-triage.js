@@ -9,7 +9,8 @@
  * and the async triageSlackItem for production use.
  */
 
-import { callSonnet, cachedAnalyze } from './slack-llm.js'
+import { callSonnet, cachedAnalyze, clearCacheEntry } from './slack-llm.js'
+import { fetchContextForRef } from './slack-scanners.js'
 
 // --- Prompt builder (pure, testable) ---
 
@@ -22,9 +23,29 @@ import { callSonnet, cachedAnalyze } from './slack-llm.js'
  * @returns {string} prompt
  */
 export function buildTriagePrompt(source, { person, channel, messages }) {
+  // Format timestamps so the LLM can reason about relative dates ("tomorrow", "Friday")
+  const fmtTs = (ts) => {
+    if (!ts) return ''
+    const d = new Date(parseFloat(ts) * 1000)
+    if (isNaN(d)) return ''
+    return d.toLocaleString('en-US', {
+      timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric',
+      hour: 'numeric', minute: '2-digit', hour12: true,
+    })
+  }
+
   const transcript = messages
-    .map(m => `${m.who}: ${(m.text || '').slice(0, 200)}`)
+    .map((m, i) => {
+      const when = fmtTs(m.ts)
+      return `[${i}] ${when ? `(${when}) ` : ''}${m.who}: ${(m.text || '').slice(0, 200)}`
+    })
     .join('\n')
+
+  // Derive "now" and "last message time" for deadline context
+  const lastTs = [...messages].reverse().find(m => m.ts)?.ts
+  const lastMsgDate = lastTs ? new Date(parseFloat(lastTs) * 1000) : null
+  const nowStr = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
+  const lastMsgStr = lastMsgDate ? lastMsgDate.toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true }) : null
 
   // For DMs, detect all participants to identify group DMs
   const otherPeople = [...new Set(messages.filter(m => m.who !== 'me').map(m => m.who))]
@@ -45,23 +66,33 @@ ${sourceLabel}:
 ${transcript}
 
 Respond in this EXACT format (no markdown, no extra lines):
+You are triaging Slack messages for a task management system. Your job is to decide:
+1. Do I need to REPLY to this conversation?
+2. Do I need to CREATE A TASK to track a commitment or follow-up?
+3. Or can I DISMISS this as informational?
+
 URGENCY: <ACTION_NEEDED or FYI>
-SUMMARY: <what's happening, max 12 words>
+SUMMARY: <EXACTLY 2-4 words, NO MORE. Dashboard label, not a sentence. Examples: "MaintainX Slack access", "Deploy hotfix", "Account fix">
 ACTION: <what I should do, 1-2 sentences — or "No action needed — <reason>">
 DRAFT: <a ready-to-send Slack reply as Matthias, or "none">
+KEY_MESSAGES: <JSON array of 1-3 message indices (0-based) that are the key asks or decisions — the messages I MUST read>
 
 Rules for URGENCY:
-- ACTION_NEEDED = someone asked ME a direct question, is waiting on ME, or I need to respond/decide.
-- FYI = status update, someone else is handling it, directed at someone else, already resolved, or informational.
+- ACTION_NEEDED = I need to do something: reply, make a decision, OR track a commitment I made.
+- FYI = truly informational, fully resolved with no outstanding commitments, or directed at someone else.
 
-Critical distinctions:
-- If the @mention is asking someone ELSE to do something (even if I'm cc'd), that's FYI.
-- If someone already handled the request (e.g. "done", "on it", "deployed"), that's FYI.
-- If the conversation continued AFTER the @mention and resolved without me, that's FYI.
-- Only consider messages AFTER my last reply — everything before that is handled.
-- If they acknowledged or said they'll handle it ("noted", "will do", "on it"), ball is in THEIR court — FYI.
-- In group DMs: if two OTHER people are talking to EACH OTHER (not addressing me), that's FYI — even if one asks the other a question.
-- Consider whether I'm actually a participant in the conversation — if I haven't said anything and nobody is addressing me directly, lean toward FYI.
+Critical: if I already replied, ask "did I commit to something?"
+- "I'll check", "give us a few days", "will look into it", "let me do X" → ACTION_NEEDED. I need a task to track my commitment. First action = "track", NOT "reply".
+- Casual sign-off with no commitment ("sounds good", "cool", "thanks") and nothing promised → FYI.
+
+Other distinctions:
+- If the @mention is asking someone ELSE to do something (even if I'm cc'd) → FYI.
+- If someone already handled it ("done", "on it", "deployed") → FYI.
+- Only consider messages AFTER my last reply — everything before is handled.
+- Do NOT suggest "reply" if I already replied and nobody asked a follow-up question.
+- If they said they'll handle it ("noted", "will do", "on it"), ball is in THEIR court → FYI.
+- In group DMs: if others are talking to EACH OTHER (not me) → FYI.
+- If I haven't said anything and nobody addresses me directly → lean FYI.
 
 Rules for DRAFT:
 - Write as Matthias would actually reply — casual, direct, concise (1-3 sentences).
@@ -71,8 +102,8 @@ ACTIONS: <JSON array of ranked next steps, most important first>
 
 Each action is an object with "type" and optional params:
 - {"type":"reply","draft":"<message>"} — reply in the thread/DM
-- {"type":"track","taskText":"<short task name>","delegateOnly":true/false} — create a tracked task (delegateOnly=true if someone else owns it)
-- {"type":"watch","taskText":"<short task name>","checkHours":24} — watch for follow-up (implies delegateOnly)
+- {"type":"track","taskText":"<short task name>","delegateOnly":true/false,"deadline":"YYYY-MM-DDTHH:mm"} — create a tracked task (delegateOnly=true if someone else owns it)
+- {"type":"watch","taskText":"<short task name>","checkHours":24,"deadline":"YYYY-MM-DDTHH:mm"} — watch for follow-up (implies delegateOnly)
 - {"type":"done"} — dismiss, no action needed
 - {"type":"snooze"} — revisit later
 
@@ -82,9 +113,15 @@ Rules for ACTIONS:
 - If URGENCY is ACTION_NEEDED, first action should be "reply" or "track".
 - If URGENCY is FYI, first action should be "done".
 - "reply" action MUST include the same draft text as DRAFT.
-- "track"/"watch" taskText should be a concise task name (3-8 words), not the full summary.
+- "track"/"watch" taskText should be ultra-concise (2-4 words max), not the full summary. Examples: "MaintainX Slack access", "Deploy hotfix", "Review PR".
 - For delegate scenarios, prefer "track" with delegateOnly:true over "watch".
-- Output valid JSON on a single line after "ACTIONS: ".`
+- "deadline" is optional — only include if the conversation implies a specific timeframe (e.g. "by Friday", "tomorrow", "end of week"). Use YYYY-MM-DDTHH:mm format (ET). IMPORTANT: Resolve relative dates ("tomorrow", "Friday") relative to when the messages were SENT, not right now.${lastMsgStr ? ` Last message was sent: ${lastMsgStr}.` : ''} Current time: ${nowStr}.
+- Output valid JSON on a single line after "ACTIONS: ".
+
+Rules for KEY_MESSAGES:
+- Pick 1-3 message indices [0-based] from the transcript that are the most important — the key asks, decisions, or requests directed at me.
+- Output valid JSON array on a single line after "KEY_MESSAGES: ".
+- Example: KEY_MESSAGES: [2, 5]`
 }
 
 // --- Response parser (pure, testable) ---
@@ -94,13 +131,14 @@ Rules for ACTIONS:
  * @returns {{ urgency: 'ACTION_NEEDED' | 'FYI' | null, summary: string | null, action: string | null, draft: string | null }}
  */
 export function parseTriageResult(raw) {
-  if (!raw) return { urgency: null, summary: null, action: null, draft: null, actions: null }
+  if (!raw) return { urgency: null, summary: null, action: null, draft: null, actions: null, keyMessages: null }
 
   const urgencyMatch = raw.match(/^URGENCY:\s*(.+)/m)
   const summaryMatch = raw.match(/^SUMMARY:\s*(.+)/m)
   const actionMatch = raw.match(/^ACTION:\s*(.+)/m)
   const draftMatch = raw.match(/^DRAFT:\s*(.+)/m)
   const actionsMatch = raw.match(/^ACTIONS:\s*(.+)/m)
+  const keyMsgMatch = raw.match(/^KEY_MESSAGES:\s*(.+)/m)
 
   const urgencyRaw = urgencyMatch ? urgencyMatch[1].trim() : null
   const urgency = urgencyRaw?.startsWith('ACTION') ? 'ACTION_NEEDED'
@@ -134,7 +172,15 @@ export function parseTriageResult(raw) {
     }
   }
 
-  return { urgency, summary, action, draft, actions }
+  let keyMessages = null
+  if (keyMsgMatch) {
+    try {
+      const parsed = JSON.parse(keyMsgMatch[1].trim())
+      if (Array.isArray(parsed)) keyMessages = parsed.filter(n => typeof n === 'number').slice(0, 3)
+    } catch {}
+  }
+
+  return { urgency, summary, action, draft, actions, keyMessages }
 }
 
 // --- Async triage with caching ---
@@ -162,4 +208,22 @@ export async function triageSlackItem(cacheKey, source, opts) {
     if (!result) return null
     try { return JSON.parse(result) } catch { return null }
   })
+}
+
+/**
+ * Re-triage a single item: fetch fresh context, clear cache, re-run LLM.
+ * Returns the new triage result + context, or null on failure.
+ */
+export async function retriageItem(slackRef, contextType) {
+  const { source, person, channel, messages } = await fetchContextForRef(slackRef)
+  // Determine cache key — same format as digest uses
+  const isThread = slackRef.includes('/')
+  const cacheKey = contextType === 'slack-mentions'
+    ? `mention:${slackRef.replace('/', ':')}`
+    : isThread
+      ? `${slackRef.replace('/', ':')}`
+      : `dm:${slackRef}`
+  clearCacheEntry(`triage:${cacheKey}`)
+  const triage = await triageSlackItem(cacheKey, source, { person, channel, messages })
+  return triage ? { triage, messages } : null
 }

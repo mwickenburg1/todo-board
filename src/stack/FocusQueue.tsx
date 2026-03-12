@@ -298,6 +298,9 @@ interface FocusResponse {
       delegateOnly: boolean
     } | null
     actions?: TriageAction[] | null
+    keyMessageTs?: string[] | null
+    slackPanelEmphasis?: 'emphasized' | 'faded'
+    replyFirst?: boolean
   }
 }
 
@@ -425,6 +428,7 @@ export function FocusQueue() {
   const [newItemSlackRef, setNewItemSlackRef] = useState<string | null>(null)
   const [newItemActionHint, setNewItemActionHint] = useState<TriageAction | null>(null)
   const [rescheduleOpen, setRescheduleOpen] = useState(false)
+  const [retriaging, setRetriaging] = useState(false)
   const [viewLoading, setViewLoading] = useState<string | null>(null)
   const lastJsonRef = useRef('')
   const dataRef = useRef<FocusResponse | null>(null)
@@ -502,6 +506,18 @@ export function FocusQueue() {
     }).catch(() => {})
   }, [fetchQueue])
 
+  const handleRetriage = useCallback((id: number) => {
+    setRetriaging(true)
+    fetch('/api/focus/retriage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    }).then(() => {
+      lastJsonRef.current = ''
+      fetchQueue()
+    }).catch(() => {}).finally(() => setRetriaging(false))
+  }, [fetchQueue])
+
   // Cmd+N (new item), Cmd+J (reschedule), Cmd+Shift+C (track/create from Slack)
   // Cmd+Shift+F (fleet), Cmd+P (priorities), Cmd+Shift+G (PRs), Cmd+Shift+' (deadlines)
   useEffect(() => {
@@ -557,10 +573,18 @@ export function FocusQueue() {
         }
         setTimeout(() => setNewItemOpen(true), 10)
       }
+      // Cmd+Shift+R — re-triage current slack item (fresh Slack fetch + LLM)
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'r' || e.key === 'R')) {
+        e.preventDefault()
+        const currentTop = dataRef.current?.top
+        if (currentTop?.kind === 'slack' && currentTop.id) {
+          handleRetriage(currentTop.id)
+        }
+      }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [triggerFleet, triggerPriority, triggerPRs, triggerDeadlines])
+  }, [triggerFleet, triggerPriority, triggerPRs, triggerDeadlines, handleRetriage])
 
   const handlePromote = useCallback((id: number) => {
     fetch('/api/focus/promote', {
@@ -926,13 +950,40 @@ export function FocusQueue() {
         )}
 
         {/* LLM suggestion — actionable advice between title and Slack panel */}
-        {top!.kind === 'slack' && top!.suggestion && (
-          <p className="mt-4 text-[19px] text-gray-700 dark:text-gray-200 leading-relaxed">
-            {top!.suggestion}
-          </p>
+        {top!.kind === 'slack' && (top!.suggestion || retriaging) && (
+          <div className="mt-4 flex items-start gap-3">
+            <p className={`text-[19px] text-gray-700 dark:text-gray-200 leading-relaxed flex-1 ${retriaging ? 'opacity-50' : ''}`}>
+              {retriaging ? 'Re-analyzing...' : top!.suggestion}
+            </p>
+          </div>
         )}
 
-        {/* Hotkey hints + env controls — above Slack context for slack cards */}
+        {/* Slack thread preview — above hotkeys so user sees context first */}
+        {top!.kind === 'slack' && top!.slackRef && (() => {
+          const isMention = top!.actionVerb === 'Mention'
+          const refParts = top!.slackRef!.split('/')
+          const hasThreadTs = refParts.length > 1
+          const channelRef = isMention && hasThreadTs ? refParts[0] : top!.slackRef!
+          const focusTs = isMention ? (hasThreadTs ? refParts[1] : '') : null
+          const isEmphasized = top!.slackPanelEmphasis === 'emphasized'
+          return (
+            <div className={`mt-6 transition-opacity duration-300 ${isEmphasized ? 'opacity-100' : 'opacity-40 hover:opacity-70'}`}
+              style={isEmphasized ? { borderLeft: '3px solid rgb(59 130 246 / 0.5)', paddingLeft: '12px' } : undefined}
+            >
+              <SlackThreadPreview
+                key={`slack-${top!.id}`}
+                ref_={channelRef}
+                label={top!.channelLabel || top!.from || 'Slack'}
+                defaultExpanded
+                focusThreadTs={focusTs}
+                draftReply={top!.draftReply || null}
+                keyMessageTs={top!.keyMessageTs || null}
+              />
+            </div>
+          )
+        })()}
+
+        {/* Hotkey hints — below Slack context for slack cards */}
         {top!.kind === 'slack' && (() => {
           const em = top!.emphasizedHotkeys || []
           const emphasisOf = (label: string): HotkeyEmphasis =>
@@ -943,6 +994,7 @@ export function FocusQueue() {
             { keys: '\u2318\u21e7E', label: `snooze ${snoozeMins}m` },
             { keys: '\u2318J', label: 'reschedule' },
             { keys: '\u2318\u21e7C', label: 'track' },
+            { keys: '\u2318\u21e7R', label: 'refresh' },
           ]
           const rank = { primary: 0, secondary: 1, default: 2 }
           const sorted = [...allHotkeys].sort((a, b) =>
@@ -1064,21 +1116,7 @@ export function FocusQueue() {
             </div>
           )
         })()}
-        {/* Slack thread — inside card, reuse SlackThreadPreview */}
-        {top!.kind === 'slack' && top!.slackRef && (() => {
-          const isMention = top!.actionVerb === 'Mention'
-          const refParts = top!.slackRef!.split('/')
-          const hasThreadTs = refParts.length > 1
-          // Mentions with a thread ref: show channel context + auto-open the specific thread
-          // Mentions without a thread ref: show channel context, NO random thread auto-open
-          const channelRef = isMention && hasThreadTs ? refParts[0] : top!.slackRef!
-          const focusTs = isMention ? (hasThreadTs ? refParts[1] : '') : null
-          return (
-            <div className="mt-8">
-              <SlackThreadPreview key={`slack-${top!.id}`} ref_={channelRef} label={top!.channelLabel || top!.from || 'Slack'} defaultExpanded focusThreadTs={focusTs} draftReply={top!.draftReply || null} />
-            </div>
-          )
-        })()}
+        {/* (Slack thread preview moved above hotkeys) */}
       </div>
 
       {/* Overlay backdrop */}

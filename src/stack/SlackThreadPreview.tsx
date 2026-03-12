@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
+import { emojify } from 'node-emoji'
 
 // --- @mention autocomplete for Slack textareas ---
 
@@ -153,6 +154,7 @@ interface SlackThreadPreviewProps {
   defaultExpanded?: boolean
   focusThreadTs?: string | null  // auto-open this specific thread (fetches channel + thread)
   draftReply?: string | null     // LLM-drafted reply to pre-fill the input
+  keyMessageTs?: string[] | null // timestamps of key messages to visually emphasize
 }
 
 // --- Color system: me (blue), team (cool tones), clients (warm tones) ---
@@ -293,7 +295,7 @@ function renderText(text: string) {
       }
       return part
     }
-    return part
+    return emojify(part)
   })
 }
 
@@ -311,7 +313,7 @@ function friendlyChannelName(name: string): string {
 
 const POLL_INTERVAL = 60_000 // refresh thread every 60s
 
-export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpanded = false, focusThreadTs = null, draftReply = null }: SlackThreadPreviewProps) {
+export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpanded = false, focusThreadTs = null, draftReply = null, keyMessageTs = null }: SlackThreadPreviewProps) {
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [data, setData] = useState<ThreadData | null>(null)
   const [loading, setLoading] = useState(false)
@@ -382,11 +384,11 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
         // Focus mode: auto-open the specific thread that triggered this mention
         // Check if the root message is already in the channel messages
         const rootInChannel = (result.messages || []).some(
-          (m: ThreadMessage) => m.threadTs === focusThreadTs
+          (m: ThreadMessage) => m.threadTs === focusThreadTs || m.ts === focusThreadTs
         )
         let rootText = ''
         if (rootInChannel) {
-          const rootMsg = (result.messages || []).find((m: ThreadMessage) => m.threadTs === focusThreadTs)
+          const rootMsg = (result.messages || []).find((m: ThreadMessage) => m.threadTs === focusThreadTs || m.ts === focusThreadTs)
           rootText = rootMsg?.text || ''
         } else {
           // Root message is older than the recent channel messages — fetch and inject it
@@ -409,8 +411,14 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
             }
           } catch {}
         }
-        // Auto-open the focus thread
-        openThread(focusThreadTs, rootText)
+        // Auto-open the focus thread only if it actually has replies
+        // (if no replies, conversation continued at channel level — just highlight the message)
+        const focusMsg = (result.messages || []).find(
+          (m: ThreadMessage) => m.ts === focusThreadTs || m.threadTs === focusThreadTs
+        )
+        if (focusMsg?.replyCount && focusMsg.replyCount > 0) {
+          openThread(focusThreadTs, rootText)
+        }
       } else if (focusThreadTs !== '' && isChannelOnly) {
         // DM/channel mode (focusThreadTs is null, not empty string):
         // auto-open the most recent thread with replies
@@ -500,6 +508,7 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
   const messages = data?.messages || null
   const channelName = data?.channelName || null
   const colorMap = new Map<string, string>()
+  const keyTsSet = new Set(keyMessageTs || [])
 
   // Recency opacity: most recent message brightest, older ones fade out more aggressively
   const recencyOpacity = (idx: number, total: number): number => {
@@ -575,10 +584,11 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
                 <p className="text-[12px] text-red-400/80 dark:text-red-400/60 py-2">Failed to load thread</p>
               )}
               {messages && messages.map((msg, i) => {
-                const isFocusMessage = msg.isThreadOrigin || (focusThreadTs && msg.threadTs === focusThreadTs)
-                const fadeOpacity = hovered ? 1 : (isFocusMessage ? 1 : recencyOpacity(i, messages.length))
+                const isFocusMessage = msg.isThreadOrigin || (focusThreadTs && (msg.threadTs === focusThreadTs || msg.ts === focusThreadTs))
+                const isKeyMessage = keyTsSet.size > 0 && keyTsSet.has(msg.ts)
+                const fadeOpacity = hovered ? 1 : (isFocusMessage || isKeyMessage ? 1 : recencyOpacity(i, messages.length))
                 return (
-                <div key={i} className="group/msg" style={{ opacity: fadeOpacity, transition: 'opacity 0.3s ease' }}
+                <div key={i} className={`group/msg ${isKeyMessage ? 'border-l-2 border-amber-400 dark:border-amber-500/60 pl-2 -ml-2' : ''}`} style={{ opacity: fadeOpacity, transition: 'opacity 0.3s ease' }}
                   {...(msg.isThreadOrigin || (focusThreadTs && msg.threadTs === focusThreadTs) ? { 'data-thread-origin': '' } : {})}
                 >
                   {/* Thread origin separator — injected root message from an older thread */}

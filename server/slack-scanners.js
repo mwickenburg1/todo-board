@@ -141,11 +141,29 @@ export async function scanMentions(since) {
         }
       }
     } else {
-      // Top-level message — fetch surrounding channel context
-      const h = await slack('conversations.history', { channel: mention.chId, latest: String(parseFloat(mention.threadTs) + 1), limit: 5 })
+      // Top-level message — fetch channel context + any thread replies on the mention
+      const h = await slack('conversations.history', { channel: mention.chId, latest: String(parseFloat(mention.threadTs) + 0.001), limit: 3 })
       if (h.ok) {
         for (const msg of (h.messages || []).reverse()) {
           if (msg.subtype) continue
+          const who = msg.user === USER_ID ? 'me' : await resolveUser(msg.user)
+          context.push({ who, text: await cleanMentions((msg.text || '').slice(0, 200)), ts: msg.ts })
+        }
+      }
+      // Also fetch thread replies on this message (I may have replied in-thread)
+      const replies = await slack('conversations.replies', { channel: mention.chId, ts: mention.threadTs, limit: 10 })
+      if (replies.ok && replies.messages?.length > 1) {
+        for (const r of replies.messages.slice(1)) {
+          const who = r.user === USER_ID ? 'me' : await resolveUser(r.user)
+          context.push({ who, text: await cleanMentions((r.text || '').slice(0, 200)), ts: r.ts })
+        }
+      }
+      // Channel messages after the mention (conversation may continue at channel level)
+      const after = await slack('conversations.history', { channel: mention.chId, oldest: mention.threadTs, limit: 5 })
+      if (after.ok) {
+        const seen = new Set(context.map(c => c.ts))
+        for (const msg of (after.messages || []).reverse()) {
+          if (msg.subtype || seen.has(msg.ts)) continue
           const who = msg.user === USER_ID ? 'me' : await resolveUser(msg.user)
           context.push({ who, text: await cleanMentions((msg.text || '').slice(0, 200)), ts: msg.ts })
         }
@@ -414,6 +432,59 @@ export async function scanNewIncidents(since) {
   }
 
   return [...incidentMap.values()].filter(i => i.state !== 'Resolved' && !/stable|mitigated/i.test(i.state))
+}
+
+/**
+ * Fetch fresh message context for a single slackRef.
+ * Works for both DMs (ref = channelId) and threads (ref = channelId/threadTs).
+ * Returns { source, person, channel, messages } ready for triageSlackItem.
+ */
+export async function fetchContextForRef(slackRef) {
+  const isThread = slackRef.includes('/')
+  const [channelId, threadTs] = isThread ? slackRef.split('/') : [slackRef, null]
+
+  if (isThread) {
+    const replies = await slack('conversations.replies', { channel: channelId, ts: threadTs, limit: 20 })
+    if (!replies.ok) throw new Error(`Failed to fetch thread: ${replies.error}`)
+    const messages = []
+    for (const r of (replies.messages || []).slice(-10)) {
+      const who = r.user === USER_ID ? 'me' : await resolveUser(r.user)
+      messages.push({ who, text: await cleanMentions((r.text || '').slice(0, 200)), ts: r.ts })
+    }
+    let channelName = channelId
+    try {
+      const info = await slack('conversations.info', { channel: channelId })
+      if (info.ok) channelName = info.channel.name
+    } catch {}
+    return { source: 'thread', channel: channelName, messages }
+  }
+
+  // DM channel
+  const h = await slack('conversations.history', { channel: channelId, limit: 15 }, { useSearch: true })
+  if (!h.ok) throw new Error(`Failed to fetch DM: ${h.error}`)
+  const msgs = h.messages || []
+  const allMessages = []
+  for (const m of msgs) {
+    if (m.subtype && m.subtype !== 'bot_message') continue
+    allMessages.push({ user: m.user || m.bot_id, text: m.text || '', ts: m.ts, username: m.username })
+    if (m.reply_count > 0 && m.thread_ts) {
+      const replies = await slack('conversations.replies', { channel: channelId, ts: m.thread_ts, limit: 10 })
+      if (replies.ok && replies.messages?.length > 1) {
+        for (const r of replies.messages.slice(1)) {
+          allMessages.push({ user: r.user || r.bot_id, text: r.text || '', ts: r.ts, username: r.username })
+        }
+      }
+    }
+  }
+  allMessages.sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts))
+  let person = 'unknown'
+  const messages = []
+  for (const m of allMessages) {
+    const who = m.user === USER_ID ? 'me' : (m.username || await resolveUser(m.user))
+    if (who !== 'me' && person === 'unknown') person = who
+    messages.push({ who, text: await cleanMentions(m.text || ''), ts: m.ts })
+  }
+  return { source: 'dm', person, messages }
 }
 
 export async function readIncidentChannelMessages(incidents) {

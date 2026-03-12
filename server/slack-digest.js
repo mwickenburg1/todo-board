@@ -100,6 +100,16 @@ async function updateDigest() {
       return Math.max(...context.map(m => parseFloat(m.ts) || 0))
     }
 
+    // Helper: build suggestion JSON from triage result, resolving keyMessages indices to timestamps
+    function buildSuggestion(triage, context) {
+      if (!triage?.action) return null
+      const sorted = (context || []).sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts))
+      const keyMessageTs = triage.keyMessages
+        ? triage.keyMessages.map(i => sorted[i]?.ts).filter(Boolean)
+        : null
+      return JSON.stringify({ action: triage.action, draft: triage.draft, actions: triage.actions, keyMessageTs })
+    }
+
     // DMs — unified triage (urgency + suggestion in one call)
     if (unrepliedDMs.length > 0) {
       console.log(`[slack-digest] Triaging ${unrepliedDMs.length} DMs...`)
@@ -117,13 +127,13 @@ async function updateDigest() {
         const dm = unrepliedDMs[i]
         const t = triages[i]
         const thread = (dm.context || []).slice(-5).map(m => ({
-          who: m.who, text: (m.text || '').slice(0, 200),
+          who: m.who, text: (m.text || '').slice(0, 200), ts: m.ts,
         }))
         const latestTs = contextLatestTs(dm.context)
         if (!t || t.urgency === 'FYI') {
           notUrgent.push(dm.person)
         } else {
-          const suggestion = t.action ? JSON.stringify({ action: t.action, draft: t.draft, actions: t.actions }) : null
+          const suggestion = buildSuggestion(t, dm.context)
           urgent.push({ person: dm.person, summary: t.summary || 'needs response', thread, chId: dm.chId, latestTs, suggestion })
         }
       }
@@ -156,14 +166,15 @@ async function updateDigest() {
         const m = mentions[i]
         const t = triages[i]
         const thread = (m.context || []).map(c => ({
-          who: c.who, text: (c.text || '').slice(0, 200),
+          who: c.who, text: (c.text || '').slice(0, 200), ts: c.ts,
         }))
-        const slackRef = m.isThread ? `${m.chId}/${m.threadTs}` : m.chId
+        // Always include threadTs so the UI can focus on the specific message/thread
+        const slackRef = m.threadTs ? `${m.chId}/${m.threadTs}` : m.chId
         const latestTs = contextLatestTs(m.context)
         if (!t || t.urgency === 'FYI') {
           fyiMentions.push({ sender: m.sender, channel: m.channel })
         } else {
-          const suggestion = t.action ? JSON.stringify({ action: t.action, draft: t.draft, actions: t.actions }) : null
+          const suggestion = buildSuggestion(t, m.context)
           actionMentions.push({
             text: `${m.sender} in ${m.channel}: ${t.summary || m.text}`,
             slackThread: thread.length > 0 ? thread : undefined,
@@ -198,14 +209,14 @@ async function updateDigest() {
         const t = pulseThreads[i]
         const tr = triages[i]
         const thread = (t.context || []).slice(-5).map(m => ({
-          who: m.who, text: (m.text || '').slice(0, 200),
+          who: m.who, text: (m.text || '').slice(0, 200), ts: m.ts,
         }))
         const slackRef = t.threadKey ? t.threadKey.replace(':', '/') : null
         const latestTs = contextLatestTs(t.context)
         if (!tr || tr.urgency === 'FYI') {
           fyi.push({ channel: t.channel, from: t.from })
         } else {
-          const suggestion = tr.action ? JSON.stringify({ action: tr.action, draft: tr.draft, actions: tr.actions }) : null
+          const suggestion = buildSuggestion(tr, t.context)
           actionNeeded.push({ channel: t.channel, from: t.from, summary: tr.summary || `${t.from} replied`, thread, slackRef, latestTs, suggestion })
         }
       }
@@ -354,7 +365,8 @@ async function updateDigest() {
       }
     }
 
-    // Atomic swap: remove old + add new in one write
+    // Atomic swap: replace all slack items with fresh scan results.
+    // The triage cache ensures we don't re-call the LLM unless messages changed.
     const nonSlack = data.lists.pulse.filter(t => !t.context?.startsWith('slack-'))
     data.lists.pulse = [...nonSlack, ...newSlackItems]
 

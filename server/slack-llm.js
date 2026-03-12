@@ -137,6 +137,10 @@ export function clearAnalysisCache() {
   analysisCache.clear()
 }
 
+export function clearCacheEntry(cacheKey) {
+  return analysisCache.delete(cacheKey)
+}
+
 export async function analyzeCrashes(taggedMsgs) {
   if (taggedMsgs.length === 0) return null
   const fingerprint = taggedMsgs.map(m => m.ts.toFixed(6)).join(',')

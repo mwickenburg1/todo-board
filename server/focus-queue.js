@@ -24,6 +24,8 @@ import { snoozeItem, unsnooze, isSnoozed, getSnoozedIds, getSnoozeInfo } from '.
 import { parseNaturalTime } from './time-parser.js'
 import { hasUnread } from './slack-extract.js'
 import { fetchPRs, getPRs } from './pr-fetcher.js'
+import { retriageItem } from './slack-triage.js'
+import { deriveSlackCardState } from './slack-card-state.js'
 
 const router = Router()
 
@@ -145,15 +147,17 @@ function computeQueue(data) {
     let suggestion = p.suggestion || null
     let draftReply = null
     let actions = null
+    let keyMessageTs = null
     if (suggestion) {
       try {
         const parsed = JSON.parse(suggestion)
         suggestion = parsed.action || suggestion
         draftReply = parsed.draft || null
         actions = parsed.actions || null
+        keyMessageTs = parsed.keyMessageTs || null
       } catch {}
     }
-    slackItems.push({ id: p.id, score: score + (p.priority * 10), text: p.text, slackThread: p.slackThread, slackRef: p.slackRef, context: p.context, from: p.from || null, channelLabel: p.channelLabel || null, suggestion, draftReply, actions })
+    slackItems.push({ id: p.id, score: score + (p.priority * 10), text: p.text, slackThread: p.slackThread, slackRef: p.slackRef, context: p.context, from: p.from || null, channelLabel: p.channelLabel || null, suggestion, draftReply, actions, keyMessageTs })
   }
 
   // Each urgent Slack item is its own card
@@ -164,26 +168,23 @@ function computeQueue(data) {
     const verbMap = { 'slack-dms': 'DM', 'slack-mentions': 'Mention', 'slack-threads': 'Thread', 'slack-incidents': 'Incident', 'slack-crashes': 'Crashes' }
     // Clean Slack user mention markup: <@U123|Name> → @Name, <@U123> → @user
     const cleanLabel = summary.replace(/<@[A-Z0-9]+\|([^>]+)>/g, '@$1').replace(/<@[A-Z0-9]+>/g, '@user').replace(/<#[A-Z0-9]+\|([^>]+)>/g, '#$1').replace(/<#[A-Z0-9]+>/g, '#channel')
-    // Derive emphasized hotkeys from LLM-ranked actions
-    const hotkeyMap = { reply: 'done', track: 'track', watch: 'track', done: 'done', snooze: 'snooze' }
-    let derivedHotkeys = ['done', 'track']
-    if (s.actions && s.actions.length >= 2) {
-      const first = hotkeyMap[s.actions[0]?.type] || 'done'
-      const second = hotkeyMap[s.actions[1]?.type] || 'track'
-      derivedHotkeys = [first, second !== first ? second : (first === 'done' ? 'track' : 'done')]
-    }
+    // Derive UI state from LLM-ranked actions
+    const cardState = deriveSlackCardState(s.actions)
     items.push({
       id: s.id, kind: 'slack', score: s.score,
       label: cleanLabel,
       actionVerb: verbMap[s.context] || 'Slack',
       from, channelLabel: s.channelLabel || null,
       list: 'pulse',
-      emphasizedHotkeys: derivedHotkeys,
+      emphasizedHotkeys: cardState.emphasizedHotkeys,
+      slackPanelEmphasis: cardState.slackPanelEmphasis,
+      replyFirst: cardState.replyFirst,
       slackThread: s.slackThread || null,
       slackRef: s.slackRef || null,
       suggestion: s.suggestion || null,
       draftReply: s.draftReply || null,
       actions: s.actions || null,
+      keyMessageTs: s.keyMessageTs || null,
     })
   }
 
@@ -854,5 +855,49 @@ function migrateEnvFromLinks() {
   }
 }
 migrateEnvFromLinks()
+
+// POST /api/focus/retriage — re-triage a single slack item (fresh Slack fetch + LLM)
+router.post('/retriage', async (req, res) => {
+  const { id } = req.body
+  if (!id) return res.status(400).json({ error: 'id required' })
+
+  try {
+    const data = readData()
+    const pulse = data.lists.pulse || []
+    const item = pulse.find(t => t.id === id)
+    if (!item || !item.slackRef) return res.status(404).json({ error: 'Pulse item not found or has no slackRef' })
+
+    const result = await retriageItem(item.slackRef, item.context)
+    if (!result) return res.status(500).json({ error: 'Triage returned no result' })
+
+    const { triage, messages } = result
+    // Update pulse item in-place
+    const keyMessageTs = triage.keyMessages
+      ? triage.keyMessages.map(i => messages[i]?.ts).filter(Boolean)
+      : null
+    item.suggestion = JSON.stringify({ action: triage.action, draft: triage.draft, actions: triage.actions, keyMessageTs })
+    if (triage.summary) {
+      const colonIdx = item.text.indexOf(': ')
+      const prefix = colonIdx > 0 ? item.text.slice(0, colonIdx + 2) : ''
+      item.text = prefix + triage.summary
+    }
+    // Update thread preview with fresh messages
+    item.slackThread = messages.slice(-5).map(m => ({ who: m.who, text: (m.text || '').slice(0, 200), ts: m.ts }))
+    // Re-evaluate priority based on new urgency
+    if (triage.urgency === 'FYI') {
+      item.priority = 0
+      // Auto-dismiss FYI items so the next digest cycle doesn't re-surface them
+      if (item.slackRef) dismissSlackItem(item.slackRef)
+    } else if (triage.urgency === 'ACTION_NEEDED') {
+      item.priority = 2
+    }
+
+    saveData(data)
+    res.json({ success: true, triage })
+  } catch (err) {
+    console.error('[retriage]', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
 
 export default router

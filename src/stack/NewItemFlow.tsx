@@ -18,6 +18,7 @@ interface ActionHint {
   taskText?: string
   delegateOnly?: boolean
   checkHours?: number
+  deadline?: string
 }
 
 interface NewItemFlowProps {
@@ -53,9 +54,9 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
   const isWatch = isCreateTask && !!slackRef
   const [slackContext, setSlackContext] = useState<SlackContext | null>(null)
   const [slackLoading, setSlackLoading] = useState(false)
-  const [deadlineText, setDeadlineText] = useState('')
-  const [deadlineIso, setDeadlineIso] = useState<string | null>(null)
-  const [deadlinePreview, setDeadlinePreview] = useState<string | null>(null)
+  const [deadlineText, setDeadlineText] = useState(actionHint?.deadline || '')
+  const [deadlineIso, setDeadlineIso] = useState<string | null>(actionHint?.deadline || null)
+  const [deadlinePreview, setDeadlinePreview] = useState<string | null>(actionHint?.deadline || null)
   const [deadlineParsing, setDeadlineParsing] = useState(false)
   const [deadlineError, setDeadlineError] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
