@@ -2,6 +2,13 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 
 import { ENV_COLORS, StyledTaskText, envNum, smartDeadlineLabel } from './focusShared'
 
+interface SlackWatch {
+  ref: string
+  checkHours?: number
+  delegateOnly?: boolean
+  surfaceContext?: { who: string; text: string }[]
+}
+
 interface PriorityTask {
   id: number
   text: string
@@ -11,6 +18,7 @@ interface PriorityTask {
   deadline: string | null
   status?: string
   snoozedUntil?: number | null
+  slackWatches?: SlackWatch[]
 }
 
 function DeadlineEditor({ taskId, onSet, onClose }: {
@@ -237,6 +245,39 @@ function PrioritySortRow({ task, idx, isDragOver, isDragging, isLocked, editingD
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
           </svg>
+        </span>
+      )}
+
+      {/* Slack watch indicator */}
+      {task.slackWatches && task.slackWatches.length > 0 && (
+        <span
+          className="shrink-0 text-gray-400 dark:text-gray-500 cursor-default relative group/slack"
+          title=""
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" className="opacity-40 group-hover/slack:opacity-70 transition-opacity">
+            <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.271 0a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zm0 1.271a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zm10.124 2.521a2.528 2.528 0 0 1 2.52-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.52V8.834zm-1.271 0a2.528 2.528 0 0 1-2.521 2.521 2.528 2.528 0 0 1-2.521-2.521V2.522A2.528 2.528 0 0 1 15.165 0a2.528 2.528 0 0 1 2.522 2.522v6.312zm-2.522 10.124a2.528 2.528 0 0 1 2.522 2.52A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.521-2.522v-2.52h2.52zm0-1.271a2.527 2.527 0 0 1-2.521-2.521 2.528 2.528 0 0 1 2.521-2.522h6.313A2.528 2.528 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.522h-6.312z"/>
+          </svg>
+          <div className="absolute bottom-full right-0 mb-1 hidden group-hover/slack:block z-50 pointer-events-none">
+            <div className="bg-gray-900 dark:bg-gray-800 text-gray-100 rounded-lg px-3 py-2 text-[11px] shadow-lg border border-gray-700/50 whitespace-nowrap max-w-[300px]">
+              {task.slackWatches.map((w, i) => (
+                <div key={i} className={i > 0 ? 'mt-1.5 pt-1.5 border-t border-gray-700/50' : ''}>
+                  <div className="flex gap-3 text-gray-400">
+                    <span>{w.delegateOnly ? 'Delegate' : 'Own work'}</span>
+                    <span>check {w.checkHours || 24}h</span>
+                  </div>
+                  {w.surfaceContext && w.surfaceContext.length > 0 && (
+                    <div className="mt-1 space-y-0.5">
+                      {w.surfaceContext.map((m, j) => (
+                        <div key={j} className="truncate max-w-[280px]">
+                          <span className="text-gray-500">{m.who}:</span> {m.text.slice(0, 80)}{m.text.length > 80 ? '...' : ''}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
         </span>
       )}
 

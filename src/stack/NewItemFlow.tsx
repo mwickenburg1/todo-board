@@ -66,9 +66,10 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
   const [deadlineParsing, setDeadlineParsing] = useState(false)
   const [deadlineError, setDeadlineError] = useState<string | null>(null)
   // Existing task search (optional — link watch to existing task)
-  const [searchResults, setSearchResults] = useState<{ id: number; text: string; list: string }[]>([])
+  const [searchResults, setSearchResults] = useState<{ id: number; text: string; list: string; priority?: number; env?: string | null }[]>([])
   const [selectedTask, setSelectedTask] = useState<{ id: number; text: string } | null>(null)
   const [searchSelectedIdx, setSearchSelectedIdx] = useState(0)
+  const [searchNavigated, setSearchNavigated] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const deadlineRef = useRef<HTMLInputElement>(null)
   const backdropRef = useRef<HTMLDivElement>(null)
@@ -94,7 +95,7 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
     const timer = setTimeout(() => {
       fetch(`/api/focus/task-search?q=${encodeURIComponent(q)}`)
         .then(r => r.json())
-        .then(results => { setSearchResults(results); setSearchSelectedIdx(0) })
+        .then(results => { setSearchResults(results); setSearchSelectedIdx(0); setSearchNavigated(false) })
         .catch(() => setSearchResults([]))
     }, 200)
     return () => clearTimeout(timer)
@@ -181,15 +182,26 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
       if (e.key === 'ArrowDown') {
         e.preventDefault()
         setSearchSelectedIdx(prev => Math.min(searchResults.length - 1, prev + 1))
+        setSearchNavigated(true)
         return
       }
       if (e.key === 'ArrowUp') {
         e.preventDefault()
         setSearchSelectedIdx(prev => Math.max(0, prev - 1))
+        setSearchNavigated(true)
         return
       }
-      // Tab picks the highlighted result
-      if (e.key === 'Tab' && searchResults.length > 0) {
+      // Tab: first press activates navigation on current item, subsequent presses move down
+      if (e.key === 'Tab') {
+        e.preventDefault()
+        if (searchNavigated) {
+          setSearchSelectedIdx(prev => Math.min(searchResults.length - 1, prev + 1))
+        }
+        setSearchNavigated(true)
+        return
+      }
+      // Enter picks the highlighted result (only after navigating)
+      if (e.key === 'Enter' && searchNavigated) {
         e.preventDefault()
         const picked = searchResults[searchSelectedIdx]
         if (picked) {
@@ -214,7 +226,7 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
 
   // Global keyboard handler for type picker + snooze
   useEffect(() => {
-    if (focusArea === 'text') return
+    if (focusArea === 'text' && !selectedTask) return
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault()
@@ -343,7 +355,7 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [focusArea, selectedIdx, text, snoozeMins, showSnooze, isWatch, delegateOnly, checkHours, deadlineIso, deadlineText]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [focusArea, selectedIdx, text, snoozeMins, showSnooze, isWatch, delegateOnly, checkHours, deadlineIso, deadlineText, selectedTask]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div
@@ -413,10 +425,20 @@ export function NewItemFlow({ onClose, onCreate, isCreateTask = false, prefill =
                     : 'text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/[0.04]'
                 }`}
               >
+                {r.env && (
+                  <span className="shrink-0 w-5 h-5 rounded bg-emerald-500/20 text-emerald-400 text-[9px] font-mono flex items-center justify-center" title={r.env}>
+                    {r.env.replace('env', '')}
+                  </span>
+                )}
                 <span className="truncate flex-1">{r.text}</span>
-                <span className="text-[10px] text-gray-400 dark:text-gray-500 shrink-0">{r.list}</span>
-                {i === searchSelectedIdx && (
-                  <kbd className="px-1 py-0.5 rounded text-[9px] font-mono bg-gray-100 dark:bg-white/[0.06] text-gray-400 dark:text-gray-500 border border-gray-200/60 dark:border-white/[0.08] shrink-0">tab</kbd>
+                <span className={`text-[10px] shrink-0 ${r.list === 'daily-goals' ? 'text-blue-400 dark:text-blue-500' : 'text-gray-400 dark:text-gray-500'}`}>
+                  {r.list === 'daily-goals' ? 'daily' : r.list === 'n-full' ? 'backlog' : r.list}
+                </span>
+                {(r.priority ?? 1) >= 2 && (
+                  <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-orange-400" title={`priority ${r.priority}`} />
+                )}
+                {i === searchSelectedIdx && searchNavigated && (
+                  <kbd className="px-1 py-0.5 rounded text-[9px] font-mono bg-gray-100 dark:bg-white/[0.06] text-gray-400 dark:text-gray-500 border border-gray-200/60 dark:border-white/[0.08] shrink-0">↵</kbd>
                 )}
               </button>
             ))}

@@ -2,7 +2,7 @@
  * Slack scanners — DMs, @mentions, crashes, threads, incidents.
  */
 
-import { slack, resolveUser, cleanMentions, extractBlockText, USER_ID, CRASHES_CHANNEL, INCIDENTS_CHANNEL, BOT_SENDERS, SLACK_SEARCH_TOKEN } from './slack-api.js'
+import { slack, resolveUser, hintUserName, cleanMentions, extractBlockText, USER_ID, CRASHES_CHANNEL, INCIDENTS_CHANNEL, BOT_SENDERS, SLACK_SEARCH_TOKEN } from './slack-api.js'
 
 // --- DMs ---
 
@@ -19,8 +19,10 @@ export async function scanUnrepliedDMs(since) {
   for (const m of (r.messages?.matches || [])) {
     const ts = parseFloat(m.ts)
     if (ts < since) continue
+    // Hint the cache with username from search (helps with external/Slack Connect users)
+    if (m.user && m.username) hintUserName(m.user, m.username)
     const sender = m.user ? await resolveUser(m.user) : (m.username || 'unknown')
-    if (BOT_SENDERS.has(sender)) continue
+    if (BOT_SENDERS.has(sender.toLowerCase())) continue
     const chId = m.channel?.id
     if (!chId) continue
     if (!channelMap.has(chId) || ts > channelMap.get(chId).ts) {
@@ -69,8 +71,17 @@ export async function scanUnrepliedDMs(since) {
     // Check if I replied after the most recent incoming message (anywhere)
     const replied = allMessages.some(m => m.user === USER_ID && parseFloat(m.ts) > lastIncomingTs)
     if (!replied) {
+      // Trim to recent conversation: only messages after my last reply (+ 1 msg of context before)
+      // This prevents old topics from polluting the triage summary
+      let trimmedMessages = allMessages
+      const lastMyIdx = allMessages.map((m, i) => m.user === USER_ID ? i : -1).filter(i => i >= 0).pop()
+      if (lastMyIdx !== undefined && lastMyIdx >= 0) {
+        const startIdx = Math.max(0, lastMyIdx) // include my last reply as context boundary
+        trimmedMessages = allMessages.slice(startIdx)
+      }
+
       const context = []
-      for (const m of allMessages) {
+      for (const m of trimmedMessages) {
         const who = m.user === USER_ID ? 'me' : (m.username || await resolveUser(m.user))
         const prefix = m.isThread ? '↳ ' : ''
         context.push({ who, text: prefix + await cleanMentions(m.text), ts: m.ts })
@@ -107,14 +118,16 @@ export async function scanMentions(since) {
   }
 
   // Dedupe by thread (channel+threadTs) — keep one mention per thread
-  // Note: skip conversations.replies verification — thread_ts from search is good enough
-  // for dedup, and the verification was adding 30-40s of serial API calls
+  // Note: search API's thread_ts field is unreliable (often missing for thread replies),
+  // so we extract the real thread_ts from the permalink which always has it.
   const seen = new Set()
   const mentions = []
   for (const m of candidates) {
     const chId = m.channel.id
     const chName = m.channel?.name || '?'
-    const threadTs = m.thread_ts || m.ts
+    // Prefer thread_ts from permalink (reliable) over search field (unreliable)
+    const permalinkMatch = m.permalink?.match(/thread_ts=([0-9.]+)/)
+    const threadTs = permalinkMatch ? permalinkMatch[1] : (m.thread_ts || m.ts)
     const key = `${chId}:${threadTs}`
     if (seen.has(key)) continue
     seen.add(key)
@@ -158,16 +171,8 @@ export async function scanMentions(since) {
           context.push({ who, text: await cleanMentions((r.text || '').slice(0, 200)), ts: r.ts })
         }
       }
-      // Channel messages after the mention (conversation may continue at channel level)
-      const after = await slack('conversations.history', { channel: mention.chId, oldest: mention.threadTs, limit: 5 })
-      if (after.ok) {
-        const seen = new Set(context.map(c => c.ts))
-        for (const msg of (after.messages || []).reverse()) {
-          if (msg.subtype || seen.has(msg.ts)) continue
-          const who = msg.user === USER_ID ? 'me' : await resolveUser(msg.user)
-          context.push({ who, text: await cleanMentions((msg.text || '').slice(0, 200)), ts: msg.ts })
-        }
-      }
+      // NOTE: removed "channel messages after the mention" fetch — it was pulling in
+      // unrelated messages from the same channel, causing distinct topics to merge into one item.
     }
     mention.context = context
   }
@@ -477,12 +482,29 @@ export async function fetchContextForRef(slackRef) {
     }
   }
   allMessages.sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts))
+
+  // Trim to recent conversation: only messages after my last reply (+ my reply for context)
+  let trimmedMessages = allMessages
+  const lastMyIdx = allMessages.map((m, i) => m.user === USER_ID ? i : -1).filter(i => i >= 0).pop()
+  if (lastMyIdx !== undefined && lastMyIdx >= 0) {
+    trimmedMessages = allMessages.slice(lastMyIdx)
+  }
+
   let person = 'unknown'
   const messages = []
-  for (const m of allMessages) {
+  for (const m of trimmedMessages) {
     const who = m.user === USER_ID ? 'me' : (m.username || await resolveUser(m.user))
     if (who !== 'me' && person === 'unknown') person = who
     messages.push({ who, text: await cleanMentions(m.text || ''), ts: m.ts })
+  }
+  // If person wasn't found in trimmed messages, check full history
+  if (person === 'unknown') {
+    for (const m of allMessages) {
+      if (m.user !== USER_ID) {
+        person = m.username || await resolveUser(m.user)
+        break
+      }
+    }
   }
   return { source: 'dm', person, messages }
 }

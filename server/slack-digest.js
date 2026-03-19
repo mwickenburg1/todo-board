@@ -97,7 +97,10 @@ async function updateDigest() {
     // Helper: extract latest message timestamp from context array
     function contextLatestTs(context) {
       if (!context || context.length === 0) return 0
-      return Math.max(...context.map(m => parseFloat(m.ts) || 0))
+      // Only consider messages from others — your own replies shouldn't re-surface dismissed items
+      const otherMsgs = context.filter(m => m.who !== 'me')
+      if (otherMsgs.length === 0) return 0
+      return Math.max(...otherMsgs.map(m => parseFloat(m.ts) || 0))
     }
 
     // Helper: build suggestion JSON from triage result, resolving keyMessages indices to timestamps
@@ -126,7 +129,7 @@ async function updateDigest() {
       for (let i = 0; i < unrepliedDMs.length; i++) {
         const dm = unrepliedDMs[i]
         const t = triages[i]
-        const thread = (dm.context || []).slice(-5).map(m => ({
+        const thread = (dm.context || []).map(m => ({
           who: m.who, text: (m.text || '').slice(0, 200), ts: m.ts,
         }))
         const latestTs = contextLatestTs(dm.context)
@@ -138,7 +141,7 @@ async function updateDigest() {
         }
       }
       for (const u of urgent) {
-        items.push({ text: `${u.person}: ${u.summary}`, slackThread: u.thread, slackRef: u.chId, context: 'slack-dms', priority: 2, latestTs: u.latestTs, suggestion: u.suggestion })
+        items.push({ text: `${u.person}: ${u.summary}`, slackThread: u.thread, slackRef: u.chId, from: u.person, context: 'slack-dms', priority: 2, latestTs: u.latestTs, suggestion: u.suggestion })
       }
       if (notUrgent.length > 0) {
         items.push({ text: `DMs: ${notUrgent.join(', ')} — nothing urgent`, context: 'slack-dms', priority: 0 })
@@ -175,12 +178,13 @@ async function updateDigest() {
           fyiMentions.push({ sender: m.sender, channel: m.channel })
         } else {
           const suggestion = buildSuggestion(t, m.context)
-          actionMentions.push({
+          const baseItem = {
             text: `${m.sender} in ${m.channel}: ${t.summary || m.text}`,
             slackThread: thread.length > 0 ? thread : undefined,
             slackRef, from: m.sender, channelLabel: m.channel,
             context: 'slack-mentions', priority: 2, latestTs, suggestion,
-          })
+          }
+          actionMentions.push(baseItem)
         }
       }
       for (const a of actionMentions) {
@@ -208,7 +212,7 @@ async function updateDigest() {
       for (let i = 0; i < pulseThreads.length; i++) {
         const t = pulseThreads[i]
         const tr = triages[i]
-        const thread = (t.context || []).slice(-5).map(m => ({
+        const thread = (t.context || []).map(m => ({
           who: m.who, text: (m.text || '').slice(0, 200), ts: m.ts,
         }))
         const slackRef = t.threadKey ? t.threadKey.replace(':', '/') : null
@@ -221,7 +225,7 @@ async function updateDigest() {
         }
       }
       for (const a of actionNeeded) {
-        items.push({ text: `#${a.channel}: ${a.summary}`, slackThread: a.thread, slackRef: a.slackRef, context: 'slack-threads', priority: 2, latestTs: a.latestTs, suggestion: a.suggestion })
+        items.push({ text: `#${a.channel}: ${a.summary}`, slackThread: a.thread, slackRef: a.slackRef, from: a.from, channelLabel: `#${a.channel}`, context: 'slack-threads', priority: 2, latestTs: a.latestTs, suggestion: a.suggestion })
       }
       if (fyi.length > 0) {
         const names = [...new Set(fyi.map(f => f.from))].join(', ')

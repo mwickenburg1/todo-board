@@ -18,6 +18,7 @@ import { Router } from 'express'
 import { readData, saveData, findTask, createTask, migrateWatches } from './store.js'
 import { getConversation } from './conversations.js'
 import { acknowledgeDigest, dismissSlackItem } from './slack-digest.js'
+import { logActivity, readActivity } from './activity.js'
 import { markRoutineChecked, isRoutineCheckedToday } from './routine-state.js'
 import { ROUTINE_ITEMS } from './routine-items.js'
 import { snoozeItem, unsnooze, isSnoozed, getSnoozedIds, getSnoozeInfo } from './snooze-state.js'
@@ -57,6 +58,12 @@ let pendingDeadlines = false
 
 // When set, inject a PR dashboard view on demand.
 let pendingPRs = false
+
+// When set, inject an activity log view on demand.
+let pendingActivity = false
+
+// When set, inject an energy check view on demand.
+let pendingEnergy = false
 
 function computeFleet(data) {
   const envMap = {} // env label -> [{ id, text, list, status, hasClaudeLink }]
@@ -98,9 +105,16 @@ function computeFleet(data) {
     .map(([env, tasks]) => ({ env, tasks }))
 }
 
-function computeQueue(data) {
+export function computeQueue(data) {
   const items = []
   const pulse = (data.lists.pulse || []).filter(t => t.id && t.status !== 'done')
+
+  // Build turn count map from activity log (session_id → prompt count)
+  const allActivity = readActivity({ limit: 5000, type: 'claude_prompt' })
+  const turnsBySession = {}
+  for (const e of allActivity) {
+    if (e.session_id) turnsBySession[e.session_id] = (turnsBySession[e.session_id] || 0) + 1
+  }
 
   // --- Pulse items ---
   const slackItems = []
@@ -118,16 +132,17 @@ function computeQueue(data) {
       const emphasizedHotkeys = routine?.hotkeys
         ? (routine.hotkeys[dayOfWeek] || routine.hotkeys.default || ['done', 'reschedule'])
         : ['done', 'reschedule']
-      const kind = routine?.isFleet ? 'fleet' : routine?.isPrioritySort ? 'priority-sort' : 'pulse'
-      // Exercise stays above Slack (10000+), other routines sit below Slack DMs/mentions (9200) but above threads (3000)
-      const baseScore = p.text === 'Exercise' ? 10000 : 8000
+      const kind = routine?.isFleet ? 'fleet' : routine?.isPrioritySort ? 'priority-sort' : routine?.isEnergyCheck ? 'energy' : 'pulse'
+      // Exercise stays above Slack (10000+), energy checks at 10500 (above everything except morning), other routines sit below Slack DMs/mentions (9200) but above threads (3000)
+      const baseScore = routine?.isEnergyCheck ? 10500 : p.text === 'Exercise' ? 10000 : 8000
       const item = {
         id: p.id, kind,
         score: baseScore + posBonus, label: p.text,
-        sublabel: routine?.sublabel, actionVerb: 'Routine',
+        sublabel: routine?.sublabel, actionVerb: routine?.isEnergyCheck ? 'Energy' : 'Routine',
         list: 'pulse', emphasizedHotkeys,
         _isFleet: !!routine?.isFleet,
         _isPrioritySort: !!routine?.isPrioritySort,
+        _isEnergyCheck: !!routine?.isEnergyCheck,
       }
       items.push(item)
       continue
@@ -181,6 +196,7 @@ function computeQueue(data) {
       replyFirst: cardState.replyFirst,
       slackThread: s.slackThread || null,
       slackRef: s.slackRef || null,
+      context: s.context || null,
       suggestion: s.suggestion || null,
       draftReply: s.draftReply || null,
       actions: s.actions || null,
@@ -188,10 +204,14 @@ function computeQueue(data) {
     })
   }
 
-  // --- Task items from daily-goals only ---
+  // --- Task items from daily-goals only (stop at relax marker) ---
   for (const [listName, tasks] of Object.entries(data.lists)) {
     if (listName !== 'daily-goals' || !tasks) continue
-    const pending = tasks.filter(t => t.id && t.status === 'pending')
+
+    // Find relax marker position in the FULL list — items after it are below the waterline
+    const relaxIdx = tasks.findIndex(t => t.isRelaxMarker)
+    const aboveWaterline = relaxIdx >= 0 ? tasks.slice(0, relaxIdx + 1) : tasks
+    const pending = aboveWaterline.filter(t => t.id && t.status === 'pending')
 
     for (let i = 0; i < pending.length; i++) {
       const t = pending[i]
@@ -287,6 +307,40 @@ function computeQueue(data) {
 
       // All daily-goals items scored purely by position — priority order is king
       if (listName === 'daily-goals') {
+        // Prep marker — shows next N items with editable notes
+        if (t.isPrepMarker) {
+          // Gather the next 10 pending tasks after this marker in the raw list
+          const rawIdx = tasks.indexOf(t)
+          const upcoming = tasks.slice(rawIdx + 1)
+            .filter(u => u.id && u.status !== 'done' && !u.isRelaxMarker && !u.isPrepMarker)
+            .slice(0, 10)
+            .map(u => ({
+              id: u.id, text: u.text, env: u.env || null,
+              notes: u.notes || '', priority: u.priority,
+              escalation: u.escalation || 0,
+              hasClaudeLink: (u.links || []).some(l => l.type === 'claude_code'),
+            }))
+          items.push({
+            id: t.id, kind: 'prep', score: 1000 + posBonus,
+            label: 'Prep next sessions', actionVerb: 'Prep',
+            list: listName, isPrepMarker: true,
+            prepItems: upcoming,
+            emphasizedHotkeys: ['done'],
+          })
+          continue
+        }
+        // Relax marker — special item that acts as a priority waterline
+        if (t.isRelaxMarker) {
+          items.push({
+            id: t.id, kind: 'relax', score: 1000 + posBonus,
+            label: 'All priority items handled', actionVerb: 'Relax',
+            list: listName, isRelaxMarker: true,
+            emphasizedHotkeys: ['snooze'],
+          })
+          continue
+        }
+        // Sum turns across all linked sessions
+        const turnCount = claudeLinks.reduce((sum, l) => sum + (turnsBySession[l.ref] || 0), 0)
         items.push({
           id: t.id, kind: 'task', score: 1000 + posBonus,
           label: t.text, sublabel: watchSublabel || claudeSublabel,
@@ -296,6 +350,11 @@ function computeQueue(data) {
           notes: t.notes || '',
           hasConversation: getConversation(t.id).messages.length > 0,
           slackWatch: watchData || null,
+          visitedAt: t.visitedAt || null,
+          turnCount,
+          pipelineStatus: t.pipelineStatus || null,
+          pipelineNext: t.pipelineNext || null,
+          envHealth: t.envHealth || null,
         })
       }
     }
@@ -320,6 +379,7 @@ function computeQueue(data) {
         escalation: t.escalation || 0, isFireDrill: !!t.isFireDrill,
         deadline: t.deadline || null, status: t.status,
         snoozedUntil: isSnoozed(t.id) ? getSnoozeInfo(t.id)?.until : null,
+        slackWatches: (t.slackWatches || []).map(w => ({ ref: w.ref, checkHours: w.checkHours, delegateOnly: w.delegateOnly, surfaceContext: (w.surfaceContext || []).slice(0, 2) })),
       }))
     prioritySortItem.priorityTasks = dailyGoals
     prioritySortItem.label = 'Set priorities'
@@ -336,6 +396,7 @@ function computeQueue(data) {
         escalation: t.escalation || 0, isFireDrill: !!t.isFireDrill,
         deadline: t.deadline || null, status: t.status,
         snoozedUntil: isSnoozed(t.id) ? getSnoozeInfo(t.id)?.until : null,
+        slackWatches: (t.slackWatches || []).map(w => ({ ref: w.ref, checkHours: w.checkHours, delegateOnly: w.delegateOnly, surfaceContext: (w.surfaceContext || []).slice(0, 2) })),
       }))
     items.push({
       id: -1, kind: 'priority-sort', score: 15001,
@@ -382,6 +443,27 @@ function computeQueue(data) {
       label: 'Pull Requests', actionVerb: 'PRs',
       list: 'pulse', emphasizedHotkeys: ['done'],
       _isPRs: true, prs,
+    })
+  }
+
+  // --- On-demand Activity log: triggered by hotkey ---
+  if (pendingActivity) {
+    const activityEntries = readActivity({ limit: 200 })
+    items.push({
+      id: -6, kind: 'activity', score: 15005,
+      label: 'Activity Log', actionVerb: 'Activity',
+      list: 'pulse', emphasizedHotkeys: ['done'],
+      _isActivity: true, activityEntries,
+    })
+  }
+
+  // --- On-demand Energy check: triggered by hotkey ---
+  if (pendingEnergy) {
+    items.push({
+      id: -7, kind: 'energy', score: 15006,
+      label: 'Energy Check', actionVerb: 'Energy',
+      list: 'pulse', emphasizedHotkeys: ['done'],
+      _isEnergyCheck: true,
     })
   }
 
@@ -449,15 +531,29 @@ function computeQueue(data) {
   return effective
 }
 
+// Track last top task to clear visitedAt when displaced
+let lastTopTaskId = null
+
 // GET /api/focus — current top item + queue depth
 router.get('/', (req, res) => {
   try {
     const data = readData()
     const queue = computeQueue(data)
     if (queue.length === 0) {
+      lastTopTaskId = null
       return res.json({ empty: true, depth: 0, message: 'Nothing needs you right now.' })
     }
     const top = queue[0]
+
+    // Clear visitedAt when a different task becomes top
+    if (top.kind === 'task' && top.id !== lastTopTaskId && lastTopTaskId !== null) {
+      const prevResult = findTask(data, lastTopTaskId, { skipDone: true })
+      if (prevResult?.task?.visitedAt) {
+        delete prevResult.task.visitedAt
+        saveData(data)
+      }
+    }
+    if (top.kind === 'task') lastTopTaskId = top.id
     const snoozeInfo = getSnoozeInfo(top.id)
     if (snoozeInfo) {
       top.rescheduledUntilMs = snoozeInfo.until
@@ -466,10 +562,32 @@ router.get('/', (req, res) => {
     // Use task's custom snooze duration if set, otherwise global default
     const topTask = findTask(data, top.id)?.task
     const effectiveSnooze = topTask?.snoozeMins || SNOOZE_MINUTES
+    // Add linkPrompt for poller consumption
+    if (top.kind === 'task' && topTask) {
+      top.linkPrompt = topTask.notes ? `/link ${topTask.text}\n\n---\n\n## Notes\n${topTask.notes}` : `/link ${topTask.text}`
+    }
     res.json({ empty: false, depth: queue.length, position: 1, top, snoozedIds: getSnoozedIds(), snoozeMinutes: effectiveSnooze })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
+})
+
+// --- Activity logging middleware for focus actions ---
+router.use((req, res, next) => {
+  if (req.method !== 'POST') return next()
+  const origJson = res.json.bind(res)
+  res.json = (body) => {
+    const action = req.path.replace('/', '')
+    if (body?.success !== false) {
+      logActivity({
+        type: 'focus_action',
+        detail: `${action}: ${body?.item || body?.action || action}`,
+        task_id: body?.taskId || null,
+      })
+    }
+    return origJson(body)
+  }
+  next()
 })
 
 // POST /api/focus/done — complete top item
@@ -493,7 +611,21 @@ router.post('/done', (req, res) => {
       return res.json({ success: true, action: 'dismissed', item: top.label, remaining: queue.length - 1 })
     }
 
-    if (top.kind === 'slack' || top.kind === 'pulse' || top.kind === 'fleet' || top.kind === 'priority-sort' || top.kind === 'prs') {
+    // Prep marker — done = snooze 30m (never completes)
+    if (top.kind === 'prep') {
+      const until = Date.now() + 30 * 60 * 1000
+      snoozeItem(top.id, until, 'snooze')
+      return res.json({ success: true, action: 'prep-snoozed', item: top.label, remaining: queue.length - 1 })
+    }
+
+    // Relax marker — done = snooze 30m (never completes)
+    if (top.kind === 'relax') {
+      const until = Date.now() + 30 * 60 * 1000
+      snoozeItem(top.id, until, 'snooze')
+      return res.json({ success: true, action: 'relax-snoozed', item: top.label, remaining: queue.length - 1 })
+    }
+
+    if (top.kind === 'slack' || top.kind === 'pulse' || top.kind === 'fleet' || top.kind === 'priority-sort' || top.kind === 'prs' || top.kind === 'activity' || top.kind === 'energy' || top.kind === 'prep') {
       // Synthetic priority-sort (from item creation or hotkey) — just clear the flag
       if (top.id === -1 && top.kind === 'priority-sort') {
         pendingPrioritySort = false
@@ -508,6 +640,16 @@ router.post('/done', (req, res) => {
       // Synthetic PRs (from hotkey) — just clear the flag
       if (top.id === -4 && top.kind === 'prs') {
         pendingPRs = false
+        return res.json({ success: true, action: 'dismissed', item: top.label, remaining: queue.length - 1 })
+      }
+      // Synthetic Activity (from hotkey) — just clear the flag
+      if (top.id === -6 && top.kind === 'activity') {
+        pendingActivity = false
+        return res.json({ success: true, action: 'dismissed', item: top.label, remaining: queue.length - 1 })
+      }
+      // Synthetic Energy (from hotkey) — just clear the flag
+      if (top.id === -7 && top.kind === 'energy') {
+        pendingEnergy = false
         return res.json({ success: true, action: 'dismissed', item: top.label, remaining: queue.length - 1 })
       }
       // Find the pulse item to check if it's a routine
@@ -576,7 +718,7 @@ router.post('/wait', (req, res) => {
     unsnooze(top.id)
     if (promotedId === top.id) promotedId = null
 
-    if (top.kind === 'slack' || top.kind === 'pulse' || top.kind === 'fleet' || top.kind === 'priority-sort' || top.kind === 'prs') {
+    if (top.kind === 'slack' || top.kind === 'pulse' || top.kind === 'fleet' || top.kind === 'priority-sort' || top.kind === 'prs' || top.kind === 'activity' || top.kind === 'energy' || top.kind === 'prep') {
       if (top.id === -1 && top.kind === 'priority-sort') {
         pendingPrioritySort = false
         promotedId = null
@@ -739,6 +881,34 @@ router.post('/watch', (req, res) => {
   }
 })
 
+// GET /api/focus/task/:id — single task with full data for pinned overlay
+router.get('/task/:id', (req, res) => {
+  const id = parseInt(req.params.id)
+  if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' })
+  try {
+    const data = readData()
+    const result = findTask(data, id)
+    if (!result) return res.status(404).json({ error: 'Task not found' })
+    const { task, list } = result
+    const slackLinks = (task.links || []).filter(l => l.type === 'slack_thread')
+    const claudeLinks = (task.links || [])
+      .map((l, idx) => ({ ...l, idx }))
+      .filter(l => l.type === 'claude_code')
+      .map(l => ({ label: l.label, ref: l.ref, idx: l.idx }))
+    const convo = getConversation(task.id)
+    res.json({
+      id: task.id, text: task.text, list, status: task.status || 'pending',
+      env: task.env || null, notes: task.notes || '',
+      deadline: task.deadline || null,
+      slackContext: slackLinks.length > 0 ? slackLinks.map(l => ({ label: l.label || l.ref, ref: l.ref })) : null,
+      claudeLinks: claudeLinks.map(l => ({ label: l.label, ref: l.ref, idx: l.idx })),
+      hasConversation: convo.messages.length > 0,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // GET /api/focus/searchable — all items for Cmd+K search overlay
 router.get('/searchable', (req, res) => {
   try {
@@ -781,14 +951,24 @@ router.get('/task-search', (req, res) => {
         if (!t.id || !t.text) continue
         const text = t.text.toLowerCase()
         if (text.includes(q)) {
-          results.push({ id: t.id, text: t.text, list: listName })
+          // Extract env from claude_code links (e.g. "claude (env5): ...")
+          let env = null
+          if (t.links) {
+            const ccLink = t.links.find(l => l.type === 'claude_code' && l.label)
+            if (ccLink) {
+              const envMatch = ccLink.label.match(/\b(env\d+)\b/)
+              if (envMatch) env = envMatch[1]
+            }
+          }
+          results.push({ id: t.id, text: t.text, list: listName, priority: t.priority ?? 1, env })
         }
       }
     }
 
-    // Sort: daily-goals first, then focus, then rest. Max 10 results.
-    const listOrder = { 'daily-goals': 0, focus: 1, 'right-now': 2 }
-    results.sort((a, b) => (listOrder[a.list] ?? 5) - (listOrder[b.list] ?? 5))
+    // Sort: composite score — active lists (daily-goals, focus) boosted, then priority, then list
+    const listBoost = { 'daily-goals': 10, focus: 8, 'right-now': 6, queue: 2, tomorrow: 2 }
+    const score = (r) => (listBoost[r.list] ?? 0) + (r.priority ?? 1)
+    results.sort((a, b) => score(b) - score(a))
     res.json(results.slice(0, 10))
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -867,14 +1047,14 @@ router.post('/reschedule', async (req, res) => {
 // POST /api/focus/trigger-fleet — toggle on-demand fleet view
 router.post('/trigger-fleet', (req, res) => {
   pendingFleet = !pendingFleet
-  if (pendingFleet) { pendingPrioritySort = false; pendingPRs = false; pendingDeadlines = false; promotedId = null }
+  if (pendingFleet) { pendingPrioritySort = false; pendingPRs = false; pendingDeadlines = false; pendingActivity = false; pendingEnergy = false; promotedId = null }
   res.json({ success: true, active: pendingFleet })
 })
 
 // POST /api/focus/trigger-priority — toggle on-demand priority sort view
 router.post('/trigger-priority', (req, res) => {
   pendingPrioritySort = !pendingPrioritySort
-  if (pendingPrioritySort) { pendingFleet = false; pendingPRs = false; pendingDeadlines = false }
+  if (pendingPrioritySort) { pendingFleet = false; pendingPRs = false; pendingDeadlines = false; pendingActivity = false; pendingEnergy = false }
   else { promotedId = null }
   res.json({ success: true, active: pendingPrioritySort })
 })
@@ -882,15 +1062,29 @@ router.post('/trigger-priority', (req, res) => {
 // POST /api/focus/trigger-prs — toggle on-demand PR dashboard view
 router.post('/trigger-prs', (req, res) => {
   pendingPRs = !pendingPRs
-  if (pendingPRs) { pendingFleet = false; pendingPrioritySort = false; pendingDeadlines = false; promotedId = null; fetchPRs() }
+  if (pendingPRs) { pendingFleet = false; pendingPrioritySort = false; pendingDeadlines = false; pendingActivity = false; pendingEnergy = false; promotedId = null; fetchPRs() }
   res.json({ success: true, active: pendingPRs })
 })
 
 // POST /api/focus/trigger-deadlines — toggle on-demand deadline view
 router.post('/trigger-deadlines', (req, res) => {
   pendingDeadlines = !pendingDeadlines
-  if (pendingDeadlines) { pendingFleet = false; pendingPrioritySort = false; pendingPRs = false; promotedId = null }
+  if (pendingDeadlines) { pendingFleet = false; pendingPrioritySort = false; pendingPRs = false; pendingActivity = false; pendingEnergy = false; promotedId = null }
   res.json({ success: true, active: pendingDeadlines })
+})
+
+// POST /api/focus/trigger-activity — toggle on-demand activity log view
+router.post('/trigger-activity', (req, res) => {
+  pendingActivity = !pendingActivity
+  if (pendingActivity) { pendingFleet = false; pendingPrioritySort = false; pendingPRs = false; pendingDeadlines = false; pendingEnergy = false; promotedId = null }
+  res.json({ success: true, active: pendingActivity })
+})
+
+// POST /api/focus/trigger-energy — toggle on-demand energy check view
+router.post('/trigger-energy', (req, res) => {
+  pendingEnergy = !pendingEnergy
+  if (pendingEnergy) { pendingFleet = false; pendingPrioritySort = false; pendingPRs = false; pendingDeadlines = false; pendingActivity = false; promotedId = null }
+  res.json({ success: true, active: pendingEnergy })
 })
 
 // GET /api/focus/fleet — current fleet status
@@ -975,5 +1169,15 @@ router.post('/retriage', async (req, res) => {
     res.status(500).json({ error: err.message })
   }
 })
+
+export function clearOverlays() {
+  pendingPrioritySort = false
+  pendingFleet = false
+  pendingPRs = false
+  pendingDeadlines = false
+  pendingActivity = false
+  pendingEnergy = false
+  promotedId = null
+}
 
 export default router

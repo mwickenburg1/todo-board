@@ -1,5 +1,5 @@
 /**
- * LLM analysis layer — Sonnet calls with caching.
+ * LLM analysis layer — Opus/Sonnet calls with caching.
  */
 
 import { appendFileSync } from 'fs'
@@ -18,7 +18,7 @@ async function callAnthropic(prompt) {
     },
     body: JSON.stringify({
       model: 'claude-sonnet-4-6',
-      max_tokens: 150,
+      max_tokens: 800,
       messages: [{ role: 'user', content: prompt }],
     }),
   })
@@ -44,7 +44,7 @@ async function callOpenAI(prompt) {
     },
     body: JSON.stringify({
       model: 'gpt-4.1',
-      max_tokens: 150,
+      max_tokens: 800,
       messages: [{ role: 'user', content: prompt }],
     }),
   })
@@ -58,6 +58,86 @@ async function callOpenAI(prompt) {
     input_tokens: data.usage?.prompt_tokens,
     output_tokens: data.usage?.completion_tokens,
   }
+}
+
+async function callAnthropicOpus(prompt) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-6',
+      max_tokens: 1200,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  })
+  const data = await res.json()
+  if (data.type === 'error') {
+    const errType = data.error?.type || 'unknown'
+    throw new Error(`anthropic:${errType}: ${data.error?.message || 'unknown'}`)
+  }
+  return {
+    result: data.content?.[0]?.text?.trim() || null,
+    model: 'claude-opus-4-6',
+    input_tokens: data.usage?.input_tokens,
+    output_tokens: data.usage?.output_tokens,
+  }
+}
+
+/**
+ * callOpus — Opus 4.6 primary, falls back to GPT-4.1 then Sonnet.
+ * Used for task conversations (higher quality reasoning).
+ */
+export async function callOpus(prompt) {
+  if (!ANTHROPIC_API_KEY && !OPENAI_API_KEY) return null
+  const ts = new Date().toISOString()
+
+  // Try Opus first
+  if (ANTHROPIC_API_KEY) {
+    try {
+      const { result, model, input_tokens, output_tokens } = await callAnthropicOpus(prompt)
+      appendFileSync(LLM_LOG, JSON.stringify({
+        ts, model, prompt_tokens: input_tokens, output_tokens,
+        prompt: prompt.slice(0, 300), result: result?.slice(0, 200), cached: false,
+      }) + '\n')
+      return result
+    } catch (opusErr) {
+      console.error(`[slack-llm] Opus failed (${opusErr.message}), trying fallbacks`)
+    }
+  }
+
+  // Fallback to OpenAI
+  if (OPENAI_API_KEY) {
+    try {
+      const { result, model, input_tokens, output_tokens } = await callOpenAI(prompt)
+      appendFileSync(LLM_LOG, JSON.stringify({
+        ts, model, prompt_tokens: input_tokens, output_tokens,
+        prompt: prompt.slice(0, 300), result: result?.slice(0, 200), cached: false, fallback: true,
+      }) + '\n')
+      return result
+    } catch (oaiErr) {
+      console.error(`[slack-llm] OpenAI fallback failed (${oaiErr.message})`)
+    }
+  }
+
+  // Last resort: Sonnet
+  if (ANTHROPIC_API_KEY) {
+    try {
+      const { result, model, input_tokens, output_tokens } = await callAnthropic(prompt)
+      appendFileSync(LLM_LOG, JSON.stringify({
+        ts, model, prompt_tokens: input_tokens, output_tokens,
+        prompt: prompt.slice(0, 300), result: result?.slice(0, 200), cached: false, fallback: 'sonnet',
+      }) + '\n')
+      return result
+    } catch (err) {
+      console.error(`[slack-llm] All providers failed: ${err.message}`)
+    }
+  }
+
+  return null
 }
 
 export async function callSonnet(prompt) {

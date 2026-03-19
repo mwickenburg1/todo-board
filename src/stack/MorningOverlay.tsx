@@ -122,7 +122,7 @@ export function MorningOverlay({ active, onDismiss }: { active: boolean; onDismi
       >
         <span className="text-[30px] font-extralight tracking-[0.12em]"
           style={{ color: 'rgba(255,210,140,0.55)' }}>
-          peak &middot; don't waste it
+          peak &middot; and .. go
         </span>
         <span className="text-[12px] font-light tracking-[0.3em] uppercase"
           style={{ color: 'rgba(180,200,240,0.25)' }}>

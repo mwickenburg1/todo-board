@@ -3,3 +3,5 @@ dist/
 .DS_Store
 *.log
 .env
+config/gcal-service-account.json
+data/activity.jsonl

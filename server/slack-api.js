@@ -15,7 +15,8 @@ export const USER_ID = 'U02BMLFJJ64'
 export const CRASHES_CHANNEL = 'C09TBCMEPPA'
 export const INCIDENTS_CHANNEL = 'C07QTH1005N'
 export const INITIAL_LOOKBACK_HOURS = 0.5 // 30 min — keeps cold start fast
-export const BOT_SENDERS = new Set(['triage buddy', 'support-router', 'Datadog', 'Triage Buddy', 'Linear'])
+// Lowercased — all comparisons should use .toLowerCase()
+export const BOT_SENDERS = new Set(['triage buddy', 'support-router', 'datadog', 'linear'])
 export const LLM_LOG = resolve(__dirname, '..', 'llm-calls.log')
 
 export async function slack(method, params = {}, { useSearch = false, retries = 2 } = {}) {
@@ -46,6 +47,11 @@ export async function resolveUser(uid) {
   } catch {}
   userCache[uid] = uid
   return uid
+}
+
+/** Seed the user cache with a known name (e.g. from search results for external/Slack Connect users) */
+export function hintUserName(uid, name) {
+  if (uid && name && !userCache[uid]) userCache[uid] = name
 }
 
 /**

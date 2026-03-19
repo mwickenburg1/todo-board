@@ -53,6 +53,7 @@ router.post('/', (req, res) => {
           moves.push({ task, fromList: listName })
         } else if (task.status === 'in_progress') {
           task.status = 'pending'
+          delete task.surfacedAt // Clear so poller re-surfaces it
           // Keep task at its current position — priority order is set by user
           bumped++
           console.log(`[events] Returned "${task.text}" to actionable in ${listName} (kept position)`)

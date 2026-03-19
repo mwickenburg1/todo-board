@@ -176,7 +176,7 @@ export default function BoardView({ onSwitchView }: { onSwitchView: () => void }
   })
 
   return (
-    <div className="min-h-screen bg-white p-10">
+    <div className="min-h-screen bg-white dark:bg-[#0a0a0b] p-10">
       <div className="mb-8 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-medium text-[#9b9a97] mb-2">Task Board</h1>

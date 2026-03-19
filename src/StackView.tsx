@@ -9,6 +9,7 @@ import { useOptimisticActions } from './stack/useOptimisticActions'
 import { PulseBanner } from './stack/PulseBanner'
 import { RootGap } from './stack/RootGap'
 import { FocusQueue } from './stack/FocusQueue'
+import { CalendarBanner } from './stack/CalendarBanner'
 import { EveningOverlay } from './stack/EveningOverlay'
 import { MorningOverlay } from './stack/MorningOverlay'
 
@@ -181,10 +182,12 @@ export default function StackView() {
   }
 
   return (
-    <div className="min-h-screen bg-white pb-16">
+    <div className="min-h-screen bg-white dark:bg-[#0a0a0b] pb-16">
       <MorningOverlay active={!disconnected && !morningDismissed} onDismiss={dismissMorning} />
       <EveningOverlay active={disconnected} />
       <div className="max-w-6xl mx-auto px-8 pt-8">
+        {/* Calendar banner — next meeting countdown */}
+        <CalendarBanner />
         {/* Focus Queue — display-only, fetches its own data from /api/focus */}
         <FocusQueue />
 
@@ -318,6 +321,7 @@ export default function StackView() {
             </div>
           )}
         </div>
+
       </div>
 
     </div>

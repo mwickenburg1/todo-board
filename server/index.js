@@ -22,7 +22,7 @@ import todosRouter from './routes/todos.js'
 import listsRouter from './routes/lists.js'
 import eventsRouter from './routes/events.js'
 import envStatusRouter from './routes/env-status.js'
-import focusQueueRouter from './focus-queue.js'
+import focusQueueRouter, { clearOverlays, computeQueue } from './focus-queue.js'
 import { startSlackDigest, acknowledgeDigest, resetAck } from './slack-digest.js'
 import { getTrackedPublicThreadRefs, trackThread, notifyThreadActivity } from './slack-scanners.js'
 import { slack as slackApi } from './slack-api.js'
@@ -31,6 +31,9 @@ import { updateWatchFromContext } from './slack-watch.js'
 import { markRoutineChecked, isRoutineCheckedToday, clearStaleChecks } from './routine-state.js'
 import { getSnoozeMap } from './snooze-state.js'
 import { ROUTINE_ITEMS } from './routine-items.js'
+import { enrichTask } from './slack-enrich.js'
+import { startCalendarPoller, calendarRouter } from './calendar.js'
+import { activityRouter, logActivity } from './activity.js'
 
 // Load .env from project root
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -231,8 +234,8 @@ app.post('/api/slack-reply/:channel/:threadTs', async (req, res) => {
   const { text } = req.body || {}
   if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' })
   try {
-    const token = process.env.SLACK_USER_TOKEN
-    if (!token) return res.status(500).json({ error: 'SLACK_USER_TOKEN not configured' })
+    const token = process.env.SLACK_USER_WRITE_TOKEN || process.env.SLACK_USER_TOKEN
+    if (!token) return res.status(500).json({ error: 'SLACK_USER_WRITE_TOKEN not configured' })
     const body = { channel, text }
     if (threadTs !== 'channel') body.thread_ts = threadTs
     const r = await fetch('https://slack.com/api/chat.postMessage', {
@@ -332,6 +335,248 @@ app.use('/api/lists', listsRouter)
 app.use('/api/events', eventsRouter)
 app.use('/api/env-status', envStatusRouter)
 app.use('/api/focus', focusQueueRouter)
+app.use('/api/activity', activityRouter(express))
+app.use('/api/calendar', calendarRouter(express))
+
+// --- Slack enrich: search + LLM hypotheses for a task ---
+app.post('/api/enrich', async (req, res) => {
+  try {
+    const { taskId } = req.body
+    if (!taskId) return res.status(400).json({ error: 'taskId required' })
+
+    const data = readData()
+    let task = null
+    for (const [, tasks] of Object.entries(data.lists)) {
+      if (!tasks) continue
+      const found = tasks.find(t => t.id === taskId)
+      if (found) { task = found; break }
+    }
+    if (!task) return res.status(404).json({ error: 'task not found' })
+
+    const result = await enrichTask(task.text)
+    res.json({ success: true, taskText: task.text, ...result })
+  } catch (err) {
+    console.error('[enrich]', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post('/api/enrich/apply', (req, res) => {
+  try {
+    const { taskId, hypothesis, summary, messages } = req.body
+    if (!taskId || !hypothesis) return res.status(400).json({ error: 'taskId and hypothesis required' })
+
+    const data = readData()
+    let task = null
+    for (const [, tasks] of Object.entries(data.lists)) {
+      if (!tasks) continue
+      const found = tasks.find(t => t.id === taskId)
+      if (found) { task = found; break }
+    }
+    if (!task) return res.status(404).json({ error: 'task not found' })
+
+    // Build enrichment block
+    const lines = [`## Context (from Slack)\n${hypothesis}`]
+    if (summary) lines.push(`\n${summary}`)
+    if (messages?.length > 0) {
+      lines.push('\n**Supporting messages:**')
+      for (const m of messages) {
+        const label = m.isDM ? 'DM' : `#${m.channel}`
+        const link = m.permalink ? ` ([link](${m.permalink}))` : ''
+        lines.push(`- @${m.username} in ${label}: "${m.text.slice(0, 150)}"${link}`)
+      }
+    }
+    const enrichBlock = lines.join('\n')
+
+    // Append to existing notes
+    task.notes = task.notes ? `${task.notes}\n\n${enrichBlock}` : enrichBlock
+    saveData(data)
+
+    res.json({ success: true, notes: task.notes })
+  } catch (err) {
+    console.error('[enrich/apply]', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// --- Hammerspoon helpers ---
+function buildLinkPrompt(task) {
+  if (!task.notes) return `/link ${task.text}`
+  return `/link ${task.text}\n\n---\n\n## Notes\n${task.notes}`
+}
+
+// --- Next blocked agent: returns env number for Hammerspoon Space switching ---
+const SELF_AUTHORS = ['matthias', 'mwickenburg']
+function isSelfEvent(author) {
+  const lower = (author || '').toLowerCase()
+  return SELF_AUTHORS.some(s => lower.includes(s))
+}
+
+app.get('/api/next-blocked', (req, res) => {
+  try {
+    const unsurfacedOnly = req.query.unsurfaced === 'true'
+
+    // Only clear overlays on manual invocation (not poller)
+    if (!unsurfacedOnly) clearOverlays()
+
+    const data = readData()
+
+    // Check if top focus queue item is a Slack card
+    const pulse = (data.lists.pulse || []).filter(t => t.id && t.status !== 'done')
+    const topSlack = pulse.find(t => t.context?.startsWith('slack-') && t.priority > 0)
+    const topTask = (data.lists['daily-goals'] || []).find(t => {
+      if (!t.id || !t.env || t.status === 'done' || t.status === 'in_progress') return false
+      if (unsurfacedOnly && t.surfacedAt) return false // skip already-surfaced items
+      const hasClaudeLink = (t.links || []).some(l => l.type === 'claude_code')
+      return hasClaudeLink && (t.events || []).some(e =>
+        e.source === 'claude_code' && !isSelfEvent(e.author) && e.metadata?.action !== 'claim'
+      )
+    })
+
+    // Slack items score 9200+ in the queue; blocked tasks score 1000+
+    if (topSlack && !topTask) {
+      if (!unsurfacedOnly) logActivity({ type: 'next_blocked', task_id: topSlack.id, env: 'space12', detail: topSlack.text })
+      return res.json({ env: 12, id: topSlack.id, title: topSlack.text, linkPrompt: buildLinkPrompt(topSlack) })
+    }
+    if (topSlack && topTask) {
+      if (!unsurfacedOnly) logActivity({ type: 'next_blocked', task_id: topSlack.id, env: 'space12', detail: topSlack.text })
+      return res.json({ env: 12, id: topSlack.id, title: topSlack.text, linkPrompt: buildLinkPrompt(topSlack) })
+    }
+
+    if (!topTask) {
+      return res.json({ env: null })
+    }
+
+    const envNum = parseInt(topTask.env.replace('env', ''))
+    if (!unsurfacedOnly) logActivity({ type: 'next_blocked', task_id: topTask.id, env: topTask.env, detail: topTask.text })
+    res.json({ env: envNum, id: topTask.id, title: topTask.text, linkPrompt: buildLinkPrompt(topTask) })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/todos/:id/surface — mark item as surfaced (poller showed it to user)
+app.post('/api/todos/:id/surface', (req, res) => {
+  const id = parseInt(req.params.id)
+  const data = readData()
+  for (const [, items] of Object.entries(data.lists)) {
+    if (!items) continue
+    const task = items.find(t => t.id === id)
+    if (task) {
+      task.surfacedAt = new Date().toISOString()
+      saveData(data)
+      logActivity({ type: 'auto_surface', task_id: id, env: task.env, detail: task.text })
+      return res.json({ success: true })
+    }
+  }
+  res.status(404).json({ error: 'not found' })
+})
+
+// POST /api/todos/:id/unsurface — clear surfaced flag (snooze wants it back)
+app.post('/api/todos/:id/unsurface', (req, res) => {
+  const id = parseInt(req.params.id)
+  const data = readData()
+  for (const [, items] of Object.entries(data.lists)) {
+    if (!items) continue
+    const task = items.find(t => t.id === id)
+    if (task) {
+      delete task.surfacedAt
+      saveData(data)
+      return res.json({ success: true })
+    }
+  }
+  res.status(404).json({ error: 'not found' })
+})
+
+// --- Auto-assign: pick least-busy env, assign top task, return env for Hammerspoon ---
+app.get('/api/auto-assign', (_req, res) => {
+  try {
+    clearOverlays()
+
+    const data = readData()
+    const queue = computeQueue(data)
+
+    // Find the top task-kind item in the queue
+    const topItem = queue.find(item => item.kind === 'task')
+    if (!topItem) {
+      return res.json({ error: 'no task in queue' })
+    }
+
+    // Find the actual task object
+    const dailyGoals = data.lists['daily-goals'] || []
+    const task = dailyGoals.find(t => t.id === topItem.id)
+    if (!task) {
+      return res.json({ error: 'task not found' })
+    }
+
+    // If already has an env, mark visited and return it
+    if (task.env) {
+      const envNum = parseInt(task.env.replace('env', ''))
+      task.visitedAt = new Date().toISOString()
+      saveData(data)
+      logActivity({ type: 'auto_assign', task_id: task.id, env: task.env, detail: `${task.text} (existing)` })
+      return res.json({ env: envNum, linkPrompt: buildLinkPrompt(task), alreadyAssigned: true })
+    }
+
+    // Score each env 1-8: find the "strongest" (most important) task per env,
+    // then pick the env whose strongest task is weakest.
+    // escalation 3 > 2 > 1 > 0, then list position (lower index = higher priority)
+    const envScores = {} // env# -> { maxEscalation, bestPosition }
+    for (let i = 0; i < dailyGoals.length; i++) {
+      const t = dailyGoals[i]
+      if (!t.env || t.status === 'done') continue
+      const m = t.env.match(/^env(\d+)$/)
+      if (!m) continue
+      const n = parseInt(m[1])
+      if (n < 1 || n > 8) continue
+
+      const esc = t.escalation || 0
+      if (!envScores[n]) {
+        envScores[n] = { maxEscalation: esc, bestPosition: i, taskCount: 1 }
+      } else {
+        envScores[n].taskCount++
+        if (esc > envScores[n].maxEscalation) {
+          envScores[n].maxEscalation = esc
+          envScores[n].bestPosition = i
+        } else if (esc === envScores[n].maxEscalation && i < envScores[n].bestPosition) {
+          envScores[n].bestPosition = i
+        }
+      }
+    }
+
+    // Pick: empty envs first (score -1), then lowest maxEscalation, then highest bestPosition
+    let bestEnv = null
+    let bestScore = { maxEscalation: Infinity, bestPosition: -1 }
+
+    for (let n = 1; n <= 8; n++) {
+      const s = envScores[n]
+      if (!s) {
+        // Empty env — best possible candidate
+        bestEnv = n
+        break
+      }
+      if (s.maxEscalation < bestScore.maxEscalation ||
+          (s.maxEscalation === bestScore.maxEscalation && s.bestPosition > bestScore.bestPosition)) {
+        bestEnv = n
+        bestScore = s
+      }
+    }
+
+    if (!bestEnv) {
+      return res.json({ error: 'no available env' })
+    }
+
+    // Assign the task to the chosen env
+    task.env = `env${bestEnv}`
+    task.visitedAt = new Date().toISOString()
+    saveData(data)
+
+    logActivity({ type: 'auto_assign', task_id: task.id, env: task.env, detail: `${task.text} (new assignment)` })
+    res.json({ env: bestEnv, linkPrompt: buildLinkPrompt(task), assigned: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
 
 // --- Pulse check timer ---
 // Repopulates the "pulse" list every 20 min with any missing check items.
@@ -574,4 +819,5 @@ const PORT = 5181
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Todo API server running on http://0.0.0.0:${PORT}`)
   startSlackDigest()
+  startCalendarPoller(readData, saveData, createTask)
 })

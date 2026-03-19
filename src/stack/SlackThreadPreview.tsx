@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { emojify } from 'node-emoji'
+import { resolveSlackView } from '../shared/slack-view-resolver'
 
 // --- @mention autocomplete for Slack textareas ---
 
@@ -150,9 +151,11 @@ interface ThreadData {
 interface SlackThreadPreviewProps {
   ref_: string   // "channel" or "channel/ts" format
   label: string  // "#channel-name" or similar
+  context?: string // "slack-dms" | "slack-mentions" | "slack-threads" — drives view mode via resolver
+  channelName?: string // resolved channel name (for resolver label computation)
   onUnreadChange?: (ref: string, count: number) => void
   defaultExpanded?: boolean
-  focusThreadTs?: string | null  // auto-open this specific thread (fetches channel + thread)
+  focusThreadTs?: string | null  // DEPRECATED: use context instead. auto-open this specific thread
   draftReply?: string | null     // LLM-drafted reply to pre-fill the input
   keyMessageTs?: string[] | null // timestamps of key messages to visually emphasize
 }
@@ -313,7 +316,16 @@ function friendlyChannelName(name: string): string {
 
 const POLL_INTERVAL = 60_000 // refresh thread every 60s
 
-export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpanded = false, focusThreadTs = null, draftReply = null, keyMessageTs = null }: SlackThreadPreviewProps) {
+export function SlackThreadPreview({ ref_, label, context, channelName, onUnreadChange, defaultExpanded = false, focusThreadTs = null, draftReply = null, keyMessageTs = null }: SlackThreadPreviewProps) {
+  // Resolve view config — determines fetch mode, reply target, labels
+  const viewConfig = useMemo(() => {
+    if (context) {
+      return resolveSlackView({ slackRef: ref_, context, channelName, label })
+    }
+    // Legacy fallback: derive from focusThreadTs (deprecated path)
+    return null
+  }, [ref_, context, channelName, label])
+
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [data, setData] = useState<ThreadData | null>(null)
   const [loading, setLoading] = useState(false)
@@ -332,11 +344,13 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
   const abortRef = useRef<AbortController | null>(null)
 
   const parts = ref_.split('/')
-  const channel = parts[0]
-  const ts = parts[1] || null
-  // When focusThreadTs is set, always fetch channel messages (not thread-only)
-  const isChannelOnly = !ts || !!focusThreadTs
-  const msgTs = focusThreadTs || ts
+  const channel = viewConfig?.channelId || parts[0]
+  const ts = viewConfig?.threadTs || parts[1] || null
+  // Use resolver if available, otherwise legacy focusThreadTs logic
+  const isChannelOnly = viewConfig
+    ? viewConfig.fetchMode === 'channel'
+    : (!ts || !!focusThreadTs)
+  const msgTs = viewConfig?.threadTs || focusThreadTs || ts
   const slackLink = channel && msgTs
     ? `https://attentiontech.slack.com/archives/${channel}/p${msgTs.replace('.', '')}`
     : `https://attentiontech.slack.com/archives/${channel}`
@@ -506,7 +520,18 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
   }
 
   const messages = data?.messages || null
-  const channelName = data?.channelName || null
+  const resolvedChannelName = data?.channelName || null
+
+  // Reply target: resolver knows the thread, or auto-detect from messages for DM/channel views
+  const channelReplyThreadTs = (() => {
+    if (viewConfig?.replyThreadTs) return viewConfig.replyThreadTs
+    if (!isChannelOnly || !messages || messages.length === 0) return null
+    // Find the thread_ts of the most recent non-me message
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (!messages[i].isMe && messages[i].threadTs) return messages[i].threadTs
+    }
+    return null
+  })()
   const colorMap = new Map<string, string>()
   const keyTsSet = new Set(keyMessageTs || [])
 
@@ -536,10 +561,11 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
           >
             <SlackIcon size={16} />
             <span className="text-[14px] font-medium text-gray-400/80 dark:text-gray-500/80 flex-1">
-              {channelName
-              ? channelName.startsWith('mpdm-') ? friendlyChannelName(channelName)
-                : /^[CDG][A-Z0-9]+$/.test(channelName) ? label  // Raw Slack channel/DM ID — use label
-                : `#${channelName}`
+              {viewConfig ? viewConfig.headerLabel
+              : resolvedChannelName
+              ? resolvedChannelName.startsWith('mpdm-') ? friendlyChannelName(resolvedChannelName)
+                : /^[CDG][A-Z0-9]+$/.test(resolvedChannelName) ? label
+                : `#${resolvedChannelName}`
               : label}
               {messages && (
                 <span className="ml-1.5 text-gray-400/60 dark:text-gray-500/60 font-normal">
@@ -678,7 +704,7 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
                   if (!channelText.trim() || sendingChannel) return
                   setSendingChannel(true)
                   try {
-                    const res = await fetch(`/api/slack-reply/${channel}/channel`, {
+                    const res = await fetch(`/api/slack-reply/${channel}/${channelReplyThreadTs || 'channel'}`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ text: channelText.trim() }),
@@ -699,7 +725,7 @@ export function SlackThreadPreview({ ref_, label, onUnreadChange, defaultExpande
                   onChange={setChannelText}
                   onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); (e.target as HTMLTextAreaElement).form?.requestSubmit() } e.stopPropagation() }}
                   onKeyUp={(e) => e.stopPropagation()}
-                  placeholder={channelName ? `Message ${channelName.startsWith('mpdm-') ? 'group' : '#' + channelName}...` : 'Message channel...'}
+                  placeholder={viewConfig ? viewConfig.replyPlaceholder : channelReplyThreadTs ? 'Reply in thread...' : resolvedChannelName ? `Message ${resolvedChannelName.startsWith('mpdm-') ? 'group' : '#' + resolvedChannelName}...` : 'Message channel...'}
                   rows={1}
                   className="w-full text-[14px] bg-white dark:bg-white/[0.05] border border-gray-200/50 dark:border-white/[0.08] rounded-md px-3 py-2.5 text-gray-700 dark:text-gray-300 placeholder-gray-400/60 dark:placeholder-gray-500/40 focus:outline-none focus:border-blue-400/50 dark:focus:border-blue-500/30 transition-colors resize-none"
                   disabled={sendingChannel}
