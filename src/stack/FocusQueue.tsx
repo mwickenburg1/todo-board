@@ -685,7 +685,7 @@ export function FocusQueue() {
 
   useEffect(() => {
     fetchQueue()
-    const interval = setInterval(fetchQueue, 500)
+    const interval = setInterval(fetchQueue, 1500)
     return () => clearInterval(interval)
   }, [fetchQueue])
 

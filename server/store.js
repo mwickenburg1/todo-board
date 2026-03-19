@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'fs'
+import { readFileSync, writeFileSync, watchFile } from 'fs'
 import { join } from 'path'
 
 const TODOS_PATH = join(process.env.HOME, 'todos-repo', 'todos.json')
@@ -24,24 +24,37 @@ function saveSnapshot() {
 // Pinned lists that are auto-created if missing
 export const PINNED_LISTS = ['daily-goals']
 
+// In-memory cache — avoids 26 disk reads/sec from 500ms polling
+let _cache = null
+
 export function readData() {
+  if (_cache) return _cache
   const data = JSON.parse(readFileSync(TODOS_PATH, 'utf-8'))
-  // Auto-create pinned lists if missing
   for (const name of PINNED_LISTS) {
     if (!data.lists[name]) data.lists[name] = []
   }
+  _cache = data
   return data
 }
 
 export function saveData(data) {
   saveSnapshot()
   writeFileSync(TODOS_PATH, JSON.stringify(data, null, 2))
+  _cache = data
 }
+
+export function invalidateCache() {
+  _cache = null
+}
+
+// Invalidate cache if file changes externally (git sync, direct edits)
+watchFile(TODOS_PATH, { interval: 2000 }, () => { _cache = null })
 
 export function popUndo() {
   if (undoStack.length === 0) return null
   const snapshot = undoStack.pop()
   writeFileSync(TODOS_PATH, snapshot)
+  _cache = null
   persistUndoStack()
   return undoStack.length
 }
