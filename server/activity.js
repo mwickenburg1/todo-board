@@ -10,8 +10,8 @@
  *   claude_response— assistant reply in Claude Code session
  */
 
-import { appendFileSync, readFileSync, existsSync } from 'fs'
-import { resolve, dirname } from 'path'
+import { appendFileSync, readFileSync, writeFileSync, existsSync } from 'fs'
+import { resolve, dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -203,8 +203,10 @@ export function activityRouter(express) {
     res.json({ entries, count: entries.length })
   })
 
-  // In-memory manual override for today's energy rating
+  // Persist manual energy rating to disk so it survives restarts
+  const BASELINE_PATH = join(process.env.HOME, 'todos-repo', '.energy-baseline.json')
   let manualBaseline = null // { baseline, rating, date }
+  try { manualBaseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf-8')) } catch {}
 
   // GET /api/activity/baseline — today's energy baseline (manual override or auto from recovery)
   router.get('/baseline', (req, res) => {
@@ -224,6 +226,7 @@ export function activityRouter(express) {
     }
     const today = new Date().toISOString().split('T')[0]
     manualBaseline = { baseline, rating: rating || null, date: today }
+    try { writeFileSync(BASELINE_PATH, JSON.stringify(manualBaseline)) } catch {}
     logActivity({ type: 'baseline_set', detail: String(baseline), rating: rating || null })
     res.json({ success: true, baseline, rating })
   })
