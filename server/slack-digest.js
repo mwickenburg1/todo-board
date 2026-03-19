@@ -91,6 +91,9 @@ async function updateDigest() {
       threadPromise.catch(() => {})
     }
 
+    // Yield to event loop between heavy sync sections so HTTP requests aren't blocked
+    const yieldToEventLoop = () => new Promise(r => setTimeout(r, 0))
+
     const sinceLabel = ackedEpoch > 0 ? `since ${estTimeStr(ackedEpoch)}` : `${INITIAL_LOOKBACK_HOURS}h`
     const items = []
 
@@ -112,6 +115,8 @@ async function updateDigest() {
         : null
       return JSON.stringify({ action: triage.action, draft: triage.draft, actions: triage.actions, keyMessageTs })
     }
+
+    await yieldToEventLoop()
 
     // DMs — unified triage (urgency + suggestion in one call)
     if (unrepliedDMs.length > 0) {
@@ -147,6 +152,8 @@ async function updateDigest() {
         items.push({ text: `DMs: ${notUrgent.join(', ')} — nothing urgent`, context: 'slack-dms', priority: 0 })
       }
     }
+
+    await yieldToEventLoop()
 
     // @mentions — unified triage (urgency + suggestion in one call)
     if (mentions.length > 0) {
@@ -263,6 +270,8 @@ async function updateDigest() {
       const shouldWorry = analysis && /worry|concern|spike|degrad|investig|alert|critical|elevated|abnormal|outage/i.test(analysis) && !/no.{0,5}worry|not.{0,5}worry|don.t.{0,5}worry|nothing.{0,5}worry|no.{0,5}concern|not.{0,5}concern|normal/i.test(analysis)
       items.push({ text, context: 'slack-crashes', priority: shouldWorry ? 2 : 0 })
     }
+
+    await yieldToEventLoop()
 
     // Filter out dismissed items — only suppress if no new messages since dismissal
     const filteredItems = items.filter(item => {
