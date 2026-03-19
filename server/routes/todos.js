@@ -4,7 +4,7 @@ import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { readData, saveData, findTask, createTask, insertInList, createEmptySlot } from '../store.js'
 import { parseInput, placeSectionBefore } from '../helpers.js'
-import { getConversation, addMessage, clearConversation } from '../conversations.js'
+import { getConversation, addMessage, clearConversation, getAllMemories, deleteMemory } from '../conversations.js'
 
 // Load .env for Slack token (used in thread root resolution)
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -316,6 +316,18 @@ router.patch('/:id', (req, res) => {
       }
       task.escalation = escalation
     }
+    if (req.body.pipelineStatus !== undefined) {
+      if (req.body.pipelineStatus === null) delete task.pipelineStatus
+      else task.pipelineStatus = req.body.pipelineStatus
+    }
+    if (req.body.pipelineNext !== undefined) {
+      if (req.body.pipelineNext === null) delete task.pipelineNext
+      else task.pipelineNext = req.body.pipelineNext
+    }
+    if (req.body.envHealth !== undefined) {
+      if (req.body.envHealth === null) delete task.envHealth
+      else task.envHealth = req.body.envHealth
+    }
 
     saveData(data)
     res.json({ success: true, task })
@@ -491,6 +503,28 @@ router.delete('/:id/conversation', (req, res) => {
   try {
     const id = parseInt(req.params.id)
     clearConversation(id)
+    res.json({ success: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// --- Memory routes ---
+
+// Get all memories
+router.get('/memories/all', async (req, res) => {
+  try {
+    res.json({ memories: await getAllMemories() })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Delete a memory
+router.delete('/memories/:memId', async (req, res) => {
+  try {
+    const memId = req.params.memId
+    await deleteMemory(memId)
     res.json({ success: true })
   } catch (err) {
     res.status(500).json({ error: err.message })
