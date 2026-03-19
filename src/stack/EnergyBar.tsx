@@ -18,8 +18,8 @@ const CHECKS = [
   { label: '8:00 am', headline: '1 sharp · 6 solid', sub: 'biggest block of the day', msg: 'Most output per hour happens now.', idx: 2 },
   { label: '9:00 am', headline: '6 solid left', sub: 'sharp hours spent', msg: '60% of your real output is behind you.', idx: 3, color: 'text-amber-500' },
   { label: '11:00 am', headline: '4 solid left', sub: 'diminishing fast', msg: 'Each hour worth half of a morning hour.', idx: 4, color: 'text-amber-500' },
-  { label: '12:00 pm', headline: '3 left', sub: 'scraps', msg: 'This 90 min block = one morning hour.', idx: 5, color: 'text-red-400' },
-  { label: '1:30 pm', headline: '90 min', sub: 'almost nothing', msg: 'This whole block = 25 min at 8am.', idx: 6, color: 'text-gray-500' },
+  { label: '12:00 pm', headline: '3 left', sub: 'scraps', msg: 'This 90 min block = 19 min at peak. Spend wisely.', idx: 5, color: 'text-red-400' },
+  { label: '1:30 pm', headline: '90 min', sub: 'almost nothing', msg: 'This 90 min = 14 min at 8am. Wrap up or walk away.', idx: 6, color: 'text-gray-500' },
   { label: '3:00 pm', headline: 'done', sub: '', msg: 'Walk away.', idx: 7, color: 'text-emerald-500' },
 ]
 
@@ -69,12 +69,13 @@ export function EnergyBar() {
     return () => clearInterval(interval)
   }, [])
 
-  // Fetch today's baseline
+  // Fetch today's baseline + rating
   useEffect(() => {
     fetch('/api/activity/baseline')
       .then(r => r.json())
       .then(d => {
         if (d.baseline) setBaseline(d.baseline)
+        if (d.rating) setRating(d.rating)
       })
       .catch(() => {})
   }, [])
@@ -86,7 +87,7 @@ export function EnergyBar() {
     fetch('/api/activity/baseline', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ baseline: b }),
+      body: JSON.stringify({ baseline: b, rating: r }),
     }).catch(() => {})
   }, [])
 

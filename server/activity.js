@@ -203,21 +203,29 @@ export function activityRouter(express) {
     res.json({ entries, count: entries.length })
   })
 
-  // GET /api/activity/baseline — today's energy baseline from recovery time
+  // In-memory manual override for today's energy rating
+  let manualBaseline = null // { baseline, rating, date }
+
+  // GET /api/activity/baseline — today's energy baseline (manual override or auto from recovery)
   router.get('/baseline', (req, res) => {
+    const today = new Date().toISOString().split('T')[0]
+    if (manualBaseline && manualBaseline.date === today) {
+      return res.json({ baseline: manualBaseline.baseline, rating: manualBaseline.rating, manual: true })
+    }
     const result = getBaseline()
     res.json(result)
   })
 
-  // POST /api/activity/baseline — manually set today's baseline (overrides auto)
+  // POST /api/activity/baseline — manually set today's baseline + rating
   router.post('/baseline', (req, res) => {
-    const { baseline } = req.body
+    const { baseline, rating } = req.body
     if (typeof baseline !== 'number' || baseline < 0 || baseline > 100) {
       return res.status(400).json({ error: 'baseline must be 0-100' })
     }
-    // Store as a special activity event
-    logActivity({ type: 'baseline_set', detail: String(baseline) })
-    res.json({ success: true, baseline })
+    const today = new Date().toISOString().split('T')[0]
+    manualBaseline = { baseline, rating: rating || null, date: today }
+    logActivity({ type: 'baseline_set', detail: String(baseline), rating: rating || null })
+    res.json({ success: true, baseline, rating })
   })
 
   // GET /api/activity/stats — summary stats
